@@ -578,13 +578,47 @@ function formatScore(pct, sections) {
 
 
 
-function buildGrowthData(sections, assessmentName, subgroupMap, priorMap, nameMap, settings) {
+function buildGrowthData(sections, assessmentName, subgroupMap, priorMap, nameMap, settings, assessmentOrder) {
   const thresh = settings?.proficiencyThreshold ?? 70;
   const rs     = settings?.riskSettings ?? {};
   const resolve = (n) => (nameMap && nameMap[n]) ? nameMap[n] : n;
   const resolvedAssessmentName = resolve(assessmentName);
+
+  // Determine which sections are "prior" vs "current".
+  // If assessmentOrder is set, the last entry is current; everything else is prior.
+  // If not set, use the _isPrior flag already on sections.
+  const currentAsmRaw = assessmentOrder && assessmentOrder.length > 0
+    ? assessmentOrder[assessmentOrder.length - 1]
+    : null;
+  const isPriorSection = (sec) => {
+    if (currentAsmRaw) return sec.currentAssessment !== currentAsmRaw;
+    return !!sec._isPrior;
+  };
+
+  // Build a position map for sorting history by assessmentOrder
+  const orderIndex = (asmName) => {
+    if (!assessmentOrder || assessmentOrder.length === 0) return 0;
+    const idx = assessmentOrder.indexOf(asmName);
+    return idx === -1 ? -1 : idx;
+  };
+
+  // Build a lookup from prior sections keyed by studentId/name.
+  // These are excluded from the main report pool; their scores become history.
+  const priorSectionsByKey = {};
+  sections.filter(s => isPriorSection(s) && !s._itemOnly).forEach(sec => {
+    sec.students.forEach(stu => {
+      if (stu.pct === null) return;
+      const key = stu.studentId || stu.name;
+      if (!priorSectionsByKey[key]) priorSectionsByKey[key] = [];
+      const asmName = resolve(sec.currentAssessment);
+      if (!priorSectionsByKey[key].find(h => h.assessment === asmName)) {
+        priorSectionsByKey[key].push({ assessment: asmName, score: stu.pct });
+      }
+    });
+  });
+
   const allStudents = [];
-  sections.forEach(sec => {
+  sections.filter(s => !isPriorSection(s) && !s._itemOnly).forEach(sec => {
     sec.students.forEach(stu => {
       if (stu.pct === null) return;
       allStudents.push({ ...stu,
@@ -689,6 +723,28 @@ function buildGrowthData(sections, assessmentName, subgroupMap, priorMap, nameMa
       : [];
 
     const history = [...crossTermHistory, ...resolvedInFileHistory];
+
+    // Inject scores from prior sections as history entries (not already covered by priorMap or in-file history)
+    const stuKey = stu.studentId || stu.name;
+    const priorSecEntries = priorSectionsByKey[stuKey] || [];
+    const existingHistoryNames = new Set(history.map(h => h.assessment));
+    priorSecEntries.forEach(entry => {
+      if (!existingHistoryNames.has(entry.assessment)) {
+        history.push({ assessment: entry.assessment, score: entry.score });
+        existingHistoryNames.add(entry.assessment);
+      }
+    });
+
+    // Sort history by assessmentOrder if defined, otherwise leave as-is
+    if (assessmentOrder && assessmentOrder.length > 0) {
+      history.sort((a, b) => {
+        const ai = orderIndex(a.assessment); const bi = orderIndex(b.assessment);
+        if (ai === -1 && bi === -1) return 0;
+        if (ai === -1) return 1;
+        if (bi === -1) return -1;
+        return ai - bi;
+      });
+    }
 
     const reassessedAssessments = [];
 
@@ -1740,6 +1796,7 @@ function App() {
 
   const [columnMappings,    setColumnMappings]    = useState({}); // { fingerprint: mapping }
   const [pendingMapping,    setPendingMapping]    = useState(null);
+  const [assessmentOrder,   setAssessmentOrder]   = useState([]); // user-defined order: [oldest, ..., current]. Last entry = current.
   const [fileLabels,        setFileLabels]        = useState({});
   const [pendingRenames,    setPendingRenames]    = useState({});
   const [savedMappingsOpen, setSavedMappingsOpen] = useState(false); // manage saved mappings panel
@@ -1806,12 +1863,13 @@ function App() {
 
   useEffect(() => {
     if (!sections.length || !report) return;
-    const allPcts = sections.flatMap(sec => sec.students.map(s => s.pct).filter(v => v !== null));
+    const currentAsmForFilter2 = assessmentOrder.length > 0 ? assessmentOrder[assessmentOrder.length - 1] : null;
+    const allPcts = sections.filter(s => !s._itemOnly && (currentAsmForFilter2 ? s.currentAssessment === currentAsmForFilter2 : !s._isPrior)).flatMap(sec => sec.students.map(s => s.pct).filter(v => v !== null));
     const thresh = teamSettings.proficiencyThreshold;
     const proficient = allPcts.filter(p => p >= thresh).length;
     const notProficient = allPcts.length - proficient;
     const proficiencyPct = allPcts.length > 0 ? Math.round((proficient / allPcts.length) * 100) : 0;
-    const gd = buildGrowthData(sections, currentAssessmentName, subgroupMap, priorMap, nameMap, teamSettings);
+    const gd = buildGrowthData(sections, currentAssessmentName, subgroupMap, priorMap, nameMap, teamSettings, assessmentOrder);
     const reassessedToProfCount = gd.reassessments.flatMap(s => s.reassessedAssessments).filter(r => r.crossedProficiency).length;
     setReport(prev => ({ ...prev, proficient, notProficient, proficiencyPct, reassessedToProfCount }));
     setGrowthData(gd);
@@ -2916,12 +2974,37 @@ function App() {
   const [assessmentNameOverride, setAssessmentNameOverride] = useState(null);
   const [editingAssessmentName, setEditingAssessmentName]   = useState(false);
 
-  const rawAssessmentName2 = sections.length > 0 ? sections[0].currentAssessment : "";
+  // If user has set an explicit assessment order, last entry is current.
+  // Otherwise fall back to the first non-prior, non-item section.
+  const rawAssessmentName2 = (() => {
+    if (assessmentOrder.length > 0) return assessmentOrder[assessmentOrder.length - 1];
+    const cur = sections.find(s => !s._isPrior && !s._itemOnly);
+    return cur ? cur.currentAssessment : (sections[0]?.currentAssessment || "");
+  })();
   const currentAssessmentName = assessmentNameOverride || (nameMap && nameMap[rawAssessmentName2]) || rawAssessmentName2;
 
   useEffect(() => {
     setAssessmentNameOverride(null);
   }, [rawAssessmentName2]);
+
+  // Sync assessmentOrder when sections change:
+  // - Add any newly seen assessment names (appended to end = treated as newest)
+  // - Remove names no longer present in any section
+  // - If only one assessment name exists, clear the order (not needed)
+  useEffect(() => {
+    const realSections = sections.filter(s => !s._itemOnly);
+    const allNames = [...new Set(realSections.map(s => s.currentAssessment).filter(Boolean))];
+    if (allNames.length <= 1) {
+      setAssessmentOrder([]); // single assessment — no ordering needed
+      return;
+    }
+    setAssessmentOrder(prev => {
+      // Keep existing order, add new names at end, remove stale names
+      const existing = prev.filter(n => allNames.includes(n));
+      const newNames = allNames.filter(n => !prev.includes(n));
+      return [...existing, ...newNames];
+    });
+  }, [sections]);
 
   useEffect(() => {
     const hasSomeItemData = sections.some(s => s.itemData);
@@ -3027,7 +3110,7 @@ function App() {
               const next = [...filtered, parsed];
               setTimeout(() => {
                 setNameMap(currentMap => {
-                  setPendingMismatches(() => detectMismatches(next.filter(s => !s._itemOnly), currentMap));
+                  setPendingMismatches(() => detectMismatches(next.filter(s => !s._itemOnly && !s._isPrior), currentMap));
                   return currentMap;
                 });
               }, 0);
@@ -3372,14 +3455,16 @@ function App() {
 
   const rebuildReport = () => {
     if (!sections.length) return false;
-    const allPcts = sections.flatMap(sec => sec.students.map(s => s.pct).filter(v => v !== null));
+    const currentAsmForFilter = assessmentOrder.length > 0 ? assessmentOrder[assessmentOrder.length - 1] : null;
+    const isCurrentSec = (s) => !s._itemOnly && (currentAsmForFilter ? s.currentAssessment === currentAsmForFilter : !s._isPrior);
+    const allPcts = sections.filter(isCurrentSec).flatMap(sec => sec.students.map(s => s.pct).filter(v => v !== null));
     const stats = computeStats(allPcts);
     const dist = gradeDist(allPcts);
-    const scoreDist = buildScoreDist(sections.filter(s => !s._itemOnly));
+    const scoreDist = buildScoreDist(sections.filter(isCurrentSec));
     const proficient = allPcts.filter(p => p >= teamSettings.proficiencyThreshold).length;
     const notProficient = allPcts.length - proficient;
     const proficiencyPct = allPcts.length > 0 ? Math.round((proficient / allPcts.length) * 100) : 0;
-    const gd = buildGrowthData(sections, currentAssessmentName, subgroupMap, priorMap, nameMap, teamSettings);
+    const gd = buildGrowthData(sections, currentAssessmentName, subgroupMap, priorMap, nameMap, teamSettings, assessmentOrder);
     const reassessedCount = gd.reassessments.length;
     const reassessedToProfCount = gd.reassessments
       .flatMap(s => s.reassessedAssessments)
@@ -6074,7 +6159,15 @@ function App() {
                                   )}
                                 </span>
                                 <span style={{ fontSize: "0.83rem", color: "#64748b" }}>{s.students.length} students</span>
-                                <span style={{ fontSize: "0.78rem", background: s._needsRename ? "#fef9c3" : "#e0f7f4", color: s._needsRename ? "#92400e" : "#0f766e", borderRadius: 4, padding: "0.1rem 0.4rem", fontWeight: 600 }}>{s.currentAssessment}</span>
+                                {(() => {
+                                  const currentAsm = assessmentOrder.length > 0 ? assessmentOrder[assessmentOrder.length - 1] : null;
+                                  const isPriorSec = currentAsm ? s.currentAssessment !== currentAsm : false;
+                                  return (
+                                    <span style={{ fontSize: "0.78rem", background: isPriorSec ? "#f1f5f9" : s._needsRename ? "#fef9c3" : "#e0f7f4", color: isPriorSec ? "#64748b" : s._needsRename ? "#92400e" : "#0f766e", borderRadius: 4, padding: "0.1rem 0.4rem", fontWeight: 600 }}>
+                                      {isPriorSec ? "📋 Prior · " : ""}{s.currentAssessment}
+                                    </span>
+                                  );
+                                })()}
                                 {s._needsRename && !renaming && (
                                   <button onClick={() => setPendingRenames(prev => ({ ...prev, [s.teacherLabel]: { teacherName: s.teacherName, label: s.teacherLabel, previewStudents: (parsedSection => (parsedSection?.students || []).slice(0,5).map(st=>st.name))(s) } }))}
                                     style={{ background: "#d97706", color: "white", border: "none", borderRadius: 5, padding: "0.2rem 0.55rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
@@ -6605,7 +6698,7 @@ function App() {
                           </span>
                         )}
                       </div>
-                    <div style={{ fontSize: "0.86rem", color: "#94a3b8" }}>{[...new Set(sections.map(s => s.teacherName || s.teacherLabel))].join(" · ")} · {totalStudents} students · {sections.length} section{sections.length !== 1 ? "s" : ""}</div>
+                    <div style={{ fontSize: "0.86rem", color: "#94a3b8" }}>{[...new Set(sections.filter(s => !s._itemOnly && (assessmentOrder.length > 0 ? s.currentAssessment === assessmentOrder[assessmentOrder.length-1] : !s._isPrior)).map(s => s.teacherName || s.teacherLabel))].join(" · ")} · {totalStudents} students · {sections.filter(s => !s._itemOnly && (assessmentOrder.length > 0 ? s.currentAssessment === assessmentOrder[assessmentOrder.length-1] : !s._isPrior)).length} section{sections.filter(s => !s._itemOnly && (assessmentOrder.length > 0 ? s.currentAssessment === assessmentOrder[assessmentOrder.length-1] : !s._isPrior)).length !== 1 ? "s" : ""}</div>
                   </div>
                   {/* Inline proficiency threshold stepper */}
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "0.2rem" }}>
@@ -6691,6 +6784,66 @@ function App() {
                   </div>
                 </div>
               </div>
+
+              {/* ── Assessment Order Control (only shown when multiple assessments loaded) ── */}
+              {assessmentOrder.length > 1 && (
+                <div style={{ background: "white", borderRadius: 10, border: "1px solid #e2e8f0", padding: "0.85rem 1.1rem", marginBottom: "1.25rem", display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+                  <div style={{ fontSize: "0.8rem", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>Assessment Order</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", flexWrap: "wrap", flex: 1 }}>
+                    {assessmentOrder.map((name, idx) => {
+                      const isCurrent = idx === assessmentOrder.length - 1;
+                      const displayName = (nameMap && nameMap[name]) || name;
+                      return (
+                        <React.Fragment key={name}>
+                          {idx > 0 && <span style={{ color: "#cbd5e1", fontSize: "1rem", userSelect: "none" }}>→</span>}
+                          <div style={{ display: "flex", alignItems: "center", gap: "0.3rem", background: isCurrent ? "#0f766e" : "#f1f5f9", borderRadius: 7, padding: "0.28rem 0.6rem", border: isCurrent ? "none" : "1px solid #e2e8f0" }}>
+                            <span style={{ fontSize: "0.88rem", fontWeight: 700, color: isCurrent ? "white" : "#334155" }}>{displayName}</span>
+                            {isCurrent && <span style={{ fontSize: "0.69rem", background: "rgba(255,255,255,0.25)", color: "white", borderRadius: 4, padding: "0.05rem 0.3rem", fontWeight: 700 }}>CURRENT</span>}
+                            {!isCurrent && (
+                              <div style={{ display: "flex", gap: "0.15rem" }}>
+                                {idx < assessmentOrder.length - 1 && (
+                                  <button
+                                    title="Move right (make more recent)"
+                                    onClick={() => {
+                                      const next = [...assessmentOrder];
+                                      [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+                                      setAssessmentOrder(next);
+                                      setTimeout(() => rebuildReport(), 0);
+                                    }}
+                                    style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", fontSize: "0.88rem", padding: "0 0.1rem", lineHeight: 1 }}>›</button>
+                                )}
+                                {idx > 0 && (
+                                  <button
+                                    title="Move left (make older)"
+                                    onClick={() => {
+                                      const next = [...assessmentOrder];
+                                      [next[idx], next[idx - 1]] = [next[idx - 1], next[idx]];
+                                      setAssessmentOrder(next);
+                                      setTimeout(() => rebuildReport(), 0);
+                                    }}
+                                    style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", fontSize: "0.88rem", padding: "0 0.1rem", lineHeight: 1 }}>‹</button>
+                                )}
+                              </div>
+                            )}
+                            {isCurrent && assessmentOrder.length > 1 && (
+                              <button
+                                title="Move left (make older — promotes previous to current)"
+                                onClick={() => {
+                                  const next = [...assessmentOrder];
+                                  [next[idx], next[idx - 1]] = [next[idx - 1], next[idx]];
+                                  setAssessmentOrder(next);
+                                  setTimeout(() => rebuildReport(), 0);
+                                }}
+                                style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.7)", fontSize: "0.88rem", padding: "0 0.1rem", lineHeight: 1 }}>‹</button>
+                            )}
+                          </div>
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: "0.77rem", color: "#94a3b8" }}>Use ‹ › to reorder · rightmost = current</div>
+                </div>
+              )}
 
               {/* ── OVERALL PERFORMANCE ── */}
               <div style={{ marginBottom: "1.75rem" }}>
