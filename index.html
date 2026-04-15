@@ -585,20 +585,19 @@ function buildGrowthData(sections, assessmentName, subgroupMap, priorMap, nameMa
   const resolvedAssessmentName = resolve(assessmentName);
 
   // Determine which sections are "prior" vs "current".
-  // If assessmentOrder is set, the last entry is current; everything else is prior.
-  // If not set, use the _isPrior flag already on sections.
-  const currentAsmRaw = assessmentOrder && assessmentOrder.length > 0
+  // assessmentOrder contains RESOLVED (canonical) names; compare by resolving sec.currentAssessment.
+  const currentAsmResolved = assessmentOrder && assessmentOrder.length > 0
     ? assessmentOrder[assessmentOrder.length - 1]
     : null;
   const isPriorSection = (sec) => {
-    if (currentAsmRaw) return sec.currentAssessment !== currentAsmRaw;
+    if (currentAsmResolved) return resolve(sec.currentAssessment) !== currentAsmResolved;
     return !!sec._isPrior;
   };
 
-  // Build a position map for sorting history by assessmentOrder
+  // Build a position map for sorting history by assessmentOrder (resolved names)
   const orderIndex = (asmName) => {
     if (!assessmentOrder || assessmentOrder.length === 0) return 0;
-    const idx = assessmentOrder.indexOf(asmName);
+    const idx = assessmentOrder.indexOf(resolve(asmName));
     return idx === -1 ? -1 : idx;
   };
 
@@ -1863,8 +1862,9 @@ function App() {
 
   useEffect(() => {
     if (!sections.length || !report) return;
+    const resolveN3 = (n) => (nameMap && nameMap[n]) ? nameMap[n] : n;
     const currentAsmForFilter2 = assessmentOrder.length > 0 ? assessmentOrder[assessmentOrder.length - 1] : null;
-    const allPcts = sections.filter(s => !s._itemOnly && (currentAsmForFilter2 ? s.currentAssessment === currentAsmForFilter2 : !s._isPrior)).flatMap(sec => sec.students.map(s => s.pct).filter(v => v !== null));
+    const allPcts = sections.filter(s => !s._itemOnly && (currentAsmForFilter2 ? resolveN3(s.currentAssessment) === currentAsmForFilter2 : !s._isPrior)).flatMap(sec => sec.students.map(s => s.pct).filter(v => v !== null));
     const thresh = teamSettings.proficiencyThreshold;
     const proficient = allPcts.filter(p => p >= thresh).length;
     const notProficient = allPcts.length - proficient;
@@ -2987,24 +2987,24 @@ function App() {
     setAssessmentNameOverride(null);
   }, [rawAssessmentName2]);
 
-  // Sync assessmentOrder when sections change:
-  // - Add any newly seen assessment names (appended to end = treated as newest)
-  // - Remove names no longer present in any section
-  // - If only one assessment name exists, clear the order (not needed)
+  // Sync assessmentOrder when sections OR nameMap change.
+  // Uses RESOLVED canonical names so that after the mismatch resolver fires,
+  // e.g. "Test 6.2 to 6.6" and "Test on 6.2 - 6.6" both map to "Test 6.2"
+  // and assessmentOrder sees just one entry for that group.
   useEffect(() => {
+    const resolveN = (n) => (nameMap && nameMap[n]) ? nameMap[n] : n;
     const realSections = sections.filter(s => !s._itemOnly);
-    const allNames = [...new Set(realSections.map(s => s.currentAssessment).filter(Boolean))];
+    const allNames = [...new Set(realSections.map(s => resolveN(s.currentAssessment)).filter(Boolean))];
     if (allNames.length <= 1) {
-      setAssessmentOrder([]); // single assessment — no ordering needed
+      setAssessmentOrder([]);
       return;
     }
     setAssessmentOrder(prev => {
-      // Keep existing order, add new names at end, remove stale names
       const existing = prev.filter(n => allNames.includes(n));
       const newNames = allNames.filter(n => !prev.includes(n));
       return [...existing, ...newNames];
     });
-  }, [sections]);
+  }, [sections, nameMap]);
 
   useEffect(() => {
     const hasSomeItemData = sections.some(s => s.itemData);
@@ -3455,8 +3455,9 @@ function App() {
 
   const rebuildReport = () => {
     if (!sections.length) return false;
+    const resolveN2 = (n) => (nameMap && nameMap[n]) ? nameMap[n] : n;
     const currentAsmForFilter = assessmentOrder.length > 0 ? assessmentOrder[assessmentOrder.length - 1] : null;
-    const isCurrentSec = (s) => !s._itemOnly && (currentAsmForFilter ? s.currentAssessment === currentAsmForFilter : !s._isPrior);
+    const isCurrentSec = (s) => !s._itemOnly && (currentAsmForFilter ? resolveN2(s.currentAssessment) === currentAsmForFilter : !s._isPrior);
     const allPcts = sections.filter(isCurrentSec).flatMap(sec => sec.students.map(s => s.pct).filter(v => v !== null));
     const stats = computeStats(allPcts);
     const dist = gradeDist(allPcts);
@@ -6161,7 +6162,8 @@ function App() {
                                 <span style={{ fontSize: "0.83rem", color: "#64748b" }}>{s.students.length} students</span>
                                 {(() => {
                                   const currentAsm = assessmentOrder.length > 0 ? assessmentOrder[assessmentOrder.length - 1] : null;
-                                  const isPriorSec = currentAsm ? s.currentAssessment !== currentAsm : false;
+                                  const resolvedAsm = (nameMap && nameMap[s.currentAssessment]) || s.currentAssessment;
+                                  const isPriorSec = currentAsm ? resolvedAsm !== currentAsm : false;
                                   return (
                                     <span style={{ fontSize: "0.78rem", background: isPriorSec ? "#f1f5f9" : s._needsRename ? "#fef9c3" : "#e0f7f4", color: isPriorSec ? "#64748b" : s._needsRename ? "#92400e" : "#0f766e", borderRadius: 4, padding: "0.1rem 0.4rem", fontWeight: 600 }}>
                                       {isPriorSec ? "📋 Prior · " : ""}{s.currentAssessment}
@@ -6249,36 +6251,46 @@ function App() {
                     {pendingMismatches.length > 0 && (
                       <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "1rem 1.25rem", marginTop: "0.75rem" }}>
                         <div style={{ fontWeight: 700, color: "#92400e", fontSize: "1.01rem", marginBottom: "0.25rem" }}>⚠️ Assessment name mismatch detected</div>
-                        <p style={{ fontSize: "1.03rem", color: "#78350f", margin: "0 0 0.75rem", lineHeight: 1.5 }}>Teachers are using different names for the same assessment. Set a canonical name for each — saved automatically so you only need to do this once.</p>
+                        <p style={{ fontSize: "1.03rem", color: "#78350f", margin: "0 0 0.75rem", lineHeight: 1.5 }}>Teachers used different names for the same assessment. Assign each raw name a canonical label — names with the same label are treated as one assessment. Saved automatically.</p>
                         <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-                          {pendingMismatches.map((m, mi) => (
-                            <div key={mi} style={{ background: "white", borderRadius: 8, padding: "0.75rem 1rem", border: "1px solid #fde68a" }}>
-                              <div style={{ fontSize: "0.83rem", fontWeight: 700, color: "#92400e", marginBottom: "0.4rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>Column {m.colIndex + 1}</div>
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem", marginBottom: "0.6rem" }}>
-                                {Object.entries(m.names).map(([label, name]) => (
-                                  <span key={label} style={{ background: "#fef9c3", borderRadius: 6, padding: "0.2rem 0.6rem", fontSize: "0.83rem" }}>
-                                    <span style={{ fontWeight: 700, color: "#78350f" }}>{label}:</span>
-                                    <span style={{ color: "#92400e", marginLeft: "0.3rem" }}>"{name}"</span>
-                                  </span>
-                                ))}
-                              </div>
-                              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                                <label style={{ fontSize: "0.86rem", fontWeight: 600, color: "#78350f", whiteSpace: "nowrap" }}>Canonical name:</label>
-                                <input value={m.draft} onChange={e => setPendingMismatches(prev => prev.map((x, i) => i === mi ? { ...x, draft: e.target.value } : x))}
-                                  style={{ flex: 1, border: "1px solid #fde68a", borderRadius: 6, padding: "0.35rem 0.6rem", fontSize: "0.94rem", fontFamily: "inherit", outline: "none", background: "#fffbeb" }} placeholder="e.g. Unit 7 Test" />
+                          {pendingMismatches.map((m, mi) => {
+                            const rawEntries = Object.entries(m.names);
+                            const perNameDrafts = m.perNameDrafts || (() => {
+                              const d = {};
+                              rawEntries.forEach(([, raw]) => { d[raw] = (nameMap && nameMap[raw]) || raw; });
+                              return d;
+                            })();
+                            return (
+                              <div key={mi} style={{ background: "white", borderRadius: 8, padding: "0.75rem 1rem", border: "1px solid #fde68a" }}>
+                                <div style={{ fontSize: "0.83rem", fontWeight: 700, color: "#92400e", marginBottom: "0.6rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>Column {m.colIndex + 1} — assign each name to a group</div>
+                                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "0.75rem" }}>
+                                  {rawEntries.map(([label, raw]) => (
+                                    <div key={raw} style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                                      <span style={{ fontSize: "0.79rem", color: "#64748b", minWidth: 110, flexShrink: 0 }}>{label}</span>
+                                      <span style={{ fontSize: "0.82rem", color: "#92400e", background: "#fef9c3", borderRadius: 5, padding: "0.1rem 0.4rem", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={raw}>{raw}</span>
+                                      <span style={{ color: "#94a3b8" }}>→</span>
+                                      <input
+                                        value={perNameDrafts[raw] || ""}
+                                        onChange={e => {
+                                          const updated = { ...perNameDrafts, [raw]: e.target.value };
+                                          setPendingMismatches(prev => prev.map((x, i) => i === mi ? { ...x, perNameDrafts: updated } : x));
+                                        }}
+                                        style={{ width: 150, border: "1px solid #fde68a", borderRadius: 6, padding: "0.25rem 0.5rem", fontSize: "0.88rem", fontFamily: "inherit", outline: "none", background: "#fffbeb" }}
+                                        placeholder="Canonical name"
+                                      />
+                                    </div>
+                                  ))}
+                                </div>
                                 <button onClick={() => {
-                                  const canonical = m.draft.trim(); if (!canonical) return;
-                                  const newEntries = {}; Object.values(m.names).forEach(rawName => { newEntries[rawName] = canonical; });
-                                  setNameMap(prev => {
-                                    const updated = { ...prev, ...newEntries };
-                                    driveSaveNameMap(updated);
-                                    return updated;
-                                  });
+                                  const drafts = m.perNameDrafts || (() => { const d = {}; rawEntries.forEach(([, raw]) => { d[raw] = raw; }); return d; })();
+                                  const newEntries = {};
+                                  Object.entries(drafts).forEach(([raw, canonical]) => { if (canonical.trim()) newEntries[raw] = canonical.trim(); });
+                                  setNameMap(prev => { const updated = { ...prev, ...newEntries }; driveSaveNameMap(updated); return updated; });
                                   setPendingMismatches(prev => prev.filter((_, i) => i !== mi));
-                                }} style={{ background: "#0f766e", color: "white", border: "none", borderRadius: 6, padding: "0.35rem 0.8rem", fontSize: "1.03rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>Confirm</button>
+                                }} style={{ background: "#0f766e", color: "white", border: "none", borderRadius: 6, padding: "0.35rem 0.8rem", fontSize: "1.03rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Confirm All</button>
                               </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -6698,7 +6710,7 @@ function App() {
                           </span>
                         )}
                       </div>
-                    <div style={{ fontSize: "0.86rem", color: "#94a3b8" }}>{[...new Set(sections.filter(s => !s._itemOnly && (assessmentOrder.length > 0 ? s.currentAssessment === assessmentOrder[assessmentOrder.length-1] : !s._isPrior)).map(s => s.teacherName || s.teacherLabel))].join(" · ")} · {totalStudents} students · {sections.filter(s => !s._itemOnly && (assessmentOrder.length > 0 ? s.currentAssessment === assessmentOrder[assessmentOrder.length-1] : !s._isPrior)).length} section{sections.filter(s => !s._itemOnly && (assessmentOrder.length > 0 ? s.currentAssessment === assessmentOrder[assessmentOrder.length-1] : !s._isPrior)).length !== 1 ? "s" : ""}</div>
+                    <div style={{ fontSize: "0.86rem", color: "#94a3b8" }}>{[...new Set(sections.filter(s => !s._itemOnly && (assessmentOrder.length > 0 ? ((nameMap && nameMap[s.currentAssessment]) || s.currentAssessment) === assessmentOrder[assessmentOrder.length-1] : !s._isPrior)).map(s => s.teacherName || s.teacherLabel))].join(" · ")} · {totalStudents} students · {sections.filter(s => !s._itemOnly && (assessmentOrder.length > 0 ? ((nameMap && nameMap[s.currentAssessment]) || s.currentAssessment) === assessmentOrder[assessmentOrder.length-1] : !s._isPrior)).length} section{sections.filter(s => !s._itemOnly && (assessmentOrder.length > 0 ? ((nameMap && nameMap[s.currentAssessment]) || s.currentAssessment) === assessmentOrder[assessmentOrder.length-1] : !s._isPrior)).length !== 1 ? "s" : ""}</div>
                   </div>
                   {/* Inline proficiency threshold stepper */}
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "0.2rem" }}>
