@@ -583,22 +583,8 @@ function buildGrowthData(sections, assessmentName, subgroupMap, priorMap, nameMa
   const rs     = settings?.riskSettings ?? {};
   const resolve = (n) => (nameMap && nameMap[n]) ? nameMap[n] : n;
   const resolvedAssessmentName = resolve(assessmentName);
-  // _isPrior sections are excluded from the current report pool.
-  // Their scores are injected into each student's history instead.
-  const priorSectionsByKey = {};
-  sections.filter(s => s._isPrior && !s._itemOnly).forEach(sec => {
-    sec.students.forEach(stu => {
-      if (stu.pct === null) return;
-      const key = stu.studentId || stu.name;
-      if (!priorSectionsByKey[key]) priorSectionsByKey[key] = [];
-      const asmName = resolve(sec.currentAssessment);
-      if (!priorSectionsByKey[key].find(h => h.assessment === asmName))
-        priorSectionsByKey[key].push({ assessment: asmName, score: stu.pct });
-    });
-  });
-
   const allStudents = [];
-  sections.filter(s => !s._isPrior && !s._itemOnly).forEach(sec => {
+  sections.forEach(sec => {
     sec.students.forEach(stu => {
       if (stu.pct === null) return;
       allStudents.push({ ...stu,
@@ -703,13 +689,6 @@ function buildGrowthData(sections, assessmentName, subgroupMap, priorMap, nameMa
       : [];
 
     const history = [...crossTermHistory, ...resolvedInFileHistory];
-
-    // Inject scores from _isPrior sections into history
-    const stuKey = stu.studentId || stu.name;
-    (priorSectionsByKey[stuKey] || []).forEach(entry => {
-      if (!history.find(h => h.assessment === entry.assessment))
-        history.unshift({ assessment: entry.assessment, score: entry.score });
-    });
 
     const reassessedAssessments = [];
 
@@ -1761,7 +1740,6 @@ function App() {
 
   const [columnMappings,    setColumnMappings]    = useState({}); // { fingerprint: mapping }
   const [pendingMapping,    setPendingMapping]    = useState(null);
-  const [pendingAssessmentMerge, setPendingAssessmentMerge] = useState(null); // { incomingName, currentName, parsedSections: [] }
   const [fileLabels,        setFileLabels]        = useState({});
   const [pendingRenames,    setPendingRenames]    = useState({});
   const [savedMappingsOpen, setSavedMappingsOpen] = useState(false); // manage saved mappings panel
@@ -1828,7 +1806,7 @@ function App() {
 
   useEffect(() => {
     if (!sections.length || !report) return;
-    const allPcts = sections.filter(s => !s._isPrior).flatMap(sec => sec.students.map(s => s.pct).filter(v => v !== null));
+    const allPcts = sections.flatMap(sec => sec.students.map(s => s.pct).filter(v => v !== null));
     const thresh = teamSettings.proficiencyThreshold;
     const proficient = allPcts.filter(p => p >= thresh).length;
     const notProficient = allPcts.length - proficient;
@@ -2938,7 +2916,7 @@ function App() {
   const [assessmentNameOverride, setAssessmentNameOverride] = useState(null);
   const [editingAssessmentName, setEditingAssessmentName]   = useState(false);
 
-  const rawAssessmentName2 = (() => { const cur = sections.find(s => !s._isPrior && !s._itemOnly); return cur ? cur.currentAssessment : (sections[0]?.currentAssessment || ""); })();
+  const rawAssessmentName2 = sections.length > 0 ? sections[0].currentAssessment : "";
   const currentAssessmentName = assessmentNameOverride || (nameMap && nameMap[rawAssessmentName2]) || rawAssessmentName2;
 
   useEffect(() => {
@@ -3045,25 +3023,11 @@ function App() {
             }
 
             setSections(prev => {
-              // If sections already loaded have a DIFFERENT assessment name, queue the modal
-              // instead of adding immediately. The user will tell us if this is older or newer.
-              const currentSections = prev.filter(s => !s._isPrior && !s._itemOnly);
-              const dominantAsm = currentSections.length > 0 ? currentSections[0].currentAssessment : null;
-              const resolvedDominant = dominantAsm ? ((nameMap && nameMap[dominantAsm]) || dominantAsm) : null;
-              const resolvedIncoming = (nameMap && nameMap[parsed.currentAssessment]) || parsed.currentAssessment;
-              if (resolvedDominant && resolvedIncoming !== resolvedDominant) {
-                setPendingAssessmentMerge(prev2 => {
-                  const base = prev2 || { incomingName: parsed.currentAssessment, currentName: dominantAsm, parsedSections: [] };
-                  if (base.parsedSections.find(p => p.teacherLabel === parsed.teacherLabel)) return base;
-                  return { ...base, parsedSections: [...base.parsedSections, parsed] };
-                });
-                return prev; // hold — don't add yet
-              }
               const filtered = prev.filter(s => s.teacherLabel !== resolvedLabel);
               const next = [...filtered, parsed];
               setTimeout(() => {
                 setNameMap(currentMap => {
-                  setPendingMismatches(() => detectMismatches(next.filter(s => !s._itemOnly && !s._isPrior), currentMap));
+                  setPendingMismatches(() => detectMismatches(next.filter(s => !s._itemOnly), currentMap));
                   return currentMap;
                 });
               }, 0);
@@ -3232,58 +3196,6 @@ function App() {
 
   const removeSection = (label) => {
     setSections(prev => prev.filter(s => s.teacherLabel !== label));
-  };
-
-  // Resolve the "older or newer?" modal.
-  // direction: "older" = incoming files are prior history (tag them _isPrior)
-  //            "newer" = incoming files are the new current (tag existing sections _isPrior)
-  const resolveAssessmentMerge = (direction) => {
-    if (!pendingAssessmentMerge) return;
-    const { parsedSections } = pendingAssessmentMerge;
-    setPendingAssessmentMerge(null);
-    setSections(prev => {
-      let next;
-      if (direction === 'older') {
-        // Incoming sections are prior history — tag _isPrior and add
-        const tagged = parsedSections.map(p => ({ ...p, _isPrior: true }));
-        const filtered = prev.filter(s => !tagged.find(t => t.teacherLabel === s.teacherLabel));
-        next = [...filtered, ...tagged];
-      } else if (direction === 'newer') {
-        // Incoming sections are the new current — demote existing to _isPrior
-        next = [
-          ...prev.map(s => (!s._isPrior && !s._itemOnly) ? { ...s, _isPrior: true } : s),
-          ...parsedSections.filter(p => !prev.find(s => s.teacherLabel === p.teacherLabel)),
-        ];
-      } else {
-        // Reassessment — merge scores into existing sections using highest-score policy
-        const policy = teamSettings?.reassessmentPolicy || 'highest';
-        next = [...prev];
-        parsedSections.forEach(incoming => {
-          const existingIdx = next.findIndex(s => s.teacherLabel === incoming.teacherLabel);
-          if (existingIdx === -1) {
-            next = [...next, incoming];
-          } else {
-            const existing = next[existingIdx];
-            const updatedStudents = existing.students.map(origStu => {
-              const reStu = incoming.students.find(r =>
-                (r.studentId && r.studentId === origStu.studentId) || r.name === origStu.name
-              );
-              if (!reStu || reStu.pct === null) return origStu;
-              if (policy === 'highest' && reStu.pct <= origStu.pct) return origStu;
-              return { ...origStu, pct: reStu.pct, _originalPct: origStu.pct };
-            });
-            next = next.map((s, i) => i === existingIdx ? { ...s, students: updatedStudents } : s);
-          }
-        });
-      }
-      setTimeout(() => {
-        setNameMap(currentMap => {
-          setPendingMismatches(() => detectMismatches(next.filter(s => !s._itemOnly && !s._isPrior), currentMap));
-          return currentMap;
-        });
-      }, 0);
-      return next;
-    });
   };
 
   const confirmMapping = (mapping) => {
@@ -3460,10 +3372,10 @@ function App() {
 
   const rebuildReport = () => {
     if (!sections.length) return false;
-    const allPcts = sections.filter(s => !s._isPrior).flatMap(sec => sec.students.map(s => s.pct).filter(v => v !== null));
+    const allPcts = sections.flatMap(sec => sec.students.map(s => s.pct).filter(v => v !== null));
     const stats = computeStats(allPcts);
     const dist = gradeDist(allPcts);
-    const scoreDist = buildScoreDist(sections.filter(s => !s._itemOnly && !s._isPrior));
+    const scoreDist = buildScoreDist(sections.filter(s => !s._itemOnly));
     const proficient = allPcts.filter(p => p >= teamSettings.proficiencyThreshold).length;
     const notProficient = allPcts.length - proficient;
     const proficiencyPct = allPcts.length > 0 ? Math.round((proficient / allPcts.length) * 100) : 0;
@@ -6162,7 +6074,7 @@ function App() {
                                   )}
                                 </span>
                                 <span style={{ fontSize: "0.83rem", color: "#64748b" }}>{s.students.length} students</span>
-                                <span style={{ fontSize: "0.78rem", background: s._isPrior ? "#f1f5f9" : s._needsRename ? "#fef9c3" : "#e0f7f4", color: s._isPrior ? "#64748b" : s._needsRename ? "#92400e" : "#0f766e", borderRadius: 4, padding: "0.1rem 0.4rem", fontWeight: 600 }}>{s._isPrior ? "📋 Prior · " : ""}{s.currentAssessment}</span>
+                                <span style={{ fontSize: "0.78rem", background: s._needsRename ? "#fef9c3" : "#e0f7f4", color: s._needsRename ? "#92400e" : "#0f766e", borderRadius: 4, padding: "0.1rem 0.4rem", fontWeight: 600 }}>{s.currentAssessment}</span>
                                 {s._needsRename && !renaming && (
                                   <button onClick={() => setPendingRenames(prev => ({ ...prev, [s.teacherLabel]: { teacherName: s.teacherName, label: s.teacherLabel, previewStudents: (parsedSection => (parsedSection?.students || []).slice(0,5).map(st=>st.name))(s) } }))}
                                     style={{ background: "#d97706", color: "white", border: "none", borderRadius: 5, padding: "0.2rem 0.55rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
@@ -6235,46 +6147,6 @@ function App() {
                       </div>
                     )}
 
-                    {/* Assessment merge modal */}
-                    {pendingAssessmentMerge && (
-                      <div style={{ background: "white", border: "2px solid #6366f1", borderRadius: 12, padding: "1.25rem 1.5rem", marginTop: "0.75rem", boxShadow: "0 4px 20px rgba(99,102,241,0.15)" }}>
-                        <div style={{ fontWeight: 700, color: "#3730a3", fontSize: "1.06rem", marginBottom: "0.5rem" }}>📋 New assessment detected</div>
-                        <p style={{ fontSize: "0.94rem", color: "#4338ca", margin: "0 0 1rem", lineHeight: 1.6 }}>
-                          You have <strong>{(nameMap && nameMap[pendingAssessmentMerge.currentName]) || pendingAssessmentMerge.currentName}</strong> loaded.
-                          These new files contain <strong>{(nameMap && nameMap[pendingAssessmentMerge.incomingName]) || pendingAssessmentMerge.incomingName}</strong>.
-                        </p>
-                        <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap", marginBottom: "1rem" }}>
-                          <button onClick={() => resolveAssessmentMerge('older')}
-                            style={{ flex: 1, minWidth: 160, background: "#f8fafc", border: "2px solid #cbd5e1", borderRadius: 9, padding: "0.75rem 1rem", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
-                            <div style={{ fontWeight: 700, color: "#0f172a", fontSize: "0.94rem", marginBottom: "0.25rem" }}>⬅ This is older</div>
-                            <div style={{ fontSize: "0.8rem", color: "#64748b", lineHeight: 1.4 }}>
-                              Keep <strong>{(nameMap && nameMap[pendingAssessmentMerge.currentName]) || pendingAssessmentMerge.currentName}</strong> as current.
-                              Add <strong>{(nameMap && nameMap[pendingAssessmentMerge.incomingName]) || pendingAssessmentMerge.incomingName}</strong> as prior history for growth tracking.
-                            </div>
-                          </button>
-                          <button onClick={() => resolveAssessmentMerge('newer')}
-                            style={{ flex: 1, minWidth: 160, background: "#f0fdf4", border: "2px solid #86efac", borderRadius: 9, padding: "0.75rem 1rem", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
-                            <div style={{ fontWeight: 700, color: "#15803d", fontSize: "0.94rem", marginBottom: "0.25rem" }}>➡ This is newer</div>
-                            <div style={{ fontSize: "0.8rem", color: "#166534", lineHeight: 1.4 }}>
-                              Make <strong>{(nameMap && nameMap[pendingAssessmentMerge.incomingName]) || pendingAssessmentMerge.incomingName}</strong> the current assessment.
-                              Move <strong>{(nameMap && nameMap[pendingAssessmentMerge.currentName]) || pendingAssessmentMerge.currentName}</strong> to prior history.
-                            </div>
-                          </button>
-                          <button onClick={() => resolveAssessmentMerge('separate')}
-                            style={{ flex: 1, minWidth: 160, background: "#fff7ed", border: "2px solid #fed7aa", borderRadius: 9, padding: "0.75rem 1rem", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
-                            <div style={{ fontWeight: 700, color: "#c2410c", fontSize: "0.94rem", marginBottom: "0.25rem" }}>🔄 Reassessment</div>
-                            <div style={{ fontSize: "0.8rem", color: "#9a3412", lineHeight: 1.4 }}>
-                              These are the same assessment re-taken. Merge scores using your reassessment policy.
-                            </div>
-                          </button>
-                        </div>
-                        <button onClick={() => setPendingAssessmentMerge(null)}
-                          style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "0.86rem", fontFamily: "inherit" }}>
-                          Cancel — discard these files
-                        </button>
-                      </div>
-                    )}
-
                     {/* Column mapping UI */}
                     {pendingMapping && (
                       <ColumnMappingUI rows={pendingMapping.rows} fileName={pendingMapping.fileName} onConfirm={confirmMapping} onCancel={() => setPendingMapping(null)} />
@@ -6323,7 +6195,7 @@ function App() {
             })()}
 
             {/* ── Continue button ── */}
-            {sections.filter(s => !s._itemOnly).length > 0 && pendingMismatches.length === 0 && !pendingMapping && !pendingAssessmentMerge && (
+            {sections.filter(s => !s._itemOnly).length > 0 && pendingMismatches.length === 0 && !pendingMapping && (
               <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "0.75rem" }}>
                 {Object.keys(pendingRenames).length > 0 && (
                   <span style={{ fontSize: "0.86rem", color: "#d97706", fontWeight: 600 }}>
@@ -6733,7 +6605,7 @@ function App() {
                           </span>
                         )}
                       </div>
-                    <div style={{ fontSize: "0.86rem", color: "#94a3b8" }}>{(() => { const cur = sections.filter(s => !s._isPrior && !s._itemOnly); return `${[...new Set(cur.map(s => s.teacherName || s.teacherLabel))].join(" · ")} · ${totalStudents} students · ${cur.length} section${cur.length !== 1 ? "s" : ""}`; })()}{sections.some(s => s._isPrior) ? ` · ${sections.filter(s => s._isPrior).length} prior` : ""}</div>
+                    <div style={{ fontSize: "0.86rem", color: "#94a3b8" }}>{[...new Set(sections.map(s => s.teacherName || s.teacherLabel))].join(" · ")} · {totalStudents} students · {sections.length} section{sections.length !== 1 ? "s" : ""}</div>
                   </div>
                   {/* Inline proficiency threshold stepper */}
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "0.2rem" }}>
@@ -6819,37 +6691,6 @@ function App() {
                   </div>
                 </div>
               </div>
-
-              {/* ── Assessment order control (shown when prior sections exist) ── */}
-              {sections.some(s => s._isPrior) && (() => {
-                const priorNames = [...new Set(sections.filter(s => s._isPrior).map(s => (nameMap && nameMap[s.currentAssessment]) || s.currentAssessment))];
-                const currentName = (nameMap && nameMap[rawAssessmentName2]) || rawAssessmentName2;
-                return (
-                  <div style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 10, padding: "0.75rem 1rem", marginBottom: "1.25rem", display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
-                    <span style={{ fontSize: "0.79rem", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>Assessment order</span>
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", flex: 1, flexWrap: "wrap" }}>
-                      {priorNames.map((pName, i) => (
-                        <React.Fragment key={pName}>
-                          <span style={{ background: "#f1f5f9", border: "1px solid #e2e8f0", borderRadius: 6, padding: "0.25rem 0.65rem", fontSize: "0.86rem", fontWeight: 600, color: "#475569" }}>{pName}</span>
-                          <span style={{ color: "#cbd5e1" }}>→</span>
-                        </React.Fragment>
-                      ))}
-                      <span style={{ background: "#0f766e", borderRadius: 6, padding: "0.25rem 0.65rem", fontSize: "0.86rem", fontWeight: 700, color: "white" }}>{currentName} <span style={{ fontSize: "0.69rem", opacity: 0.8 }}>CURRENT</span></span>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setSections(prev => prev.map(s => {
-                          if (s._itemOnly) return s;
-                          return { ...s, _isPrior: !s._isPrior };
-                        }));
-                        setTimeout(() => rebuildReport(), 0);
-                      }}
-                      style={{ background: "none", border: "1px solid #cbd5e1", borderRadius: 6, padding: "0.25rem 0.65rem", fontSize: "0.82rem", fontWeight: 600, color: "#64748b", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
-                      ⇄ Flip order
-                    </button>
-                  </div>
-                );
-              })()}
 
               {/* ── OVERALL PERFORMANCE ── */}
               <div style={{ marginBottom: "1.75rem" }}>
