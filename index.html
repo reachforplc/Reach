@@ -3439,7 +3439,8 @@ function App() {
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement("a");
       a.href = url;
-      a.download = (currentAssessmentName || "Assessment") + "_Report.html";
+      const dlSlug = (currentAssessmentName || "Assessment").replace(/[^a-zA-Z0-9 ]/g, "").replace(/\s+/g, "_");
+      a.download = dlSlug + "_Report.html";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
