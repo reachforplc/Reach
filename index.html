@@ -2913,7 +2913,7 @@ function App() {
     } catch(e) { console.warn("Could not delete team files from Drive:", e.message); }
   };
 
-  const [assessmentNameOverride, setAssessmentNameOverride] = useState(null);
+  const [assessmentNameOverride, setAssessmentNameOverride] = useState(SNAPSHOT?.assessmentName ?? null);
   const [editingAssessmentName, setEditingAssessmentName]   = useState(false);
 
   const rawAssessmentName2 = sections.length > 0 ? sections[0].currentAssessment : "";
