@@ -618,7 +618,7 @@ function buildGrowthData(sections, assessmentName, subgroupMap, priorMap, nameMa
 
   const normalizeAsmName = (n) => {
     if (!n) return "";
-    const m = n.match(/\d+/);
+    const m = n.match(/[\d]+(?:[.\-][\d]+)*/);
     return m ? m[0] : n.toLowerCase().replace(/\s+/g, "");
   };
 
