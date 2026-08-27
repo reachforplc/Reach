@@ -10,6 +10,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://apis.google.com/js/api.js" async defer></script>
 
   <link href="https://fonts.googleapis.com/css2?family=Lora:wght@600;700&family=Source+Sans+3:wght@400;500;600;700&family=DM+Serif+Display:ital@0;1&display=swap" rel="stylesheet" />
   <style>
@@ -1819,6 +1820,25 @@ function App() {
 
   const GAPI_CLIENT_ID = "881323077562-olnslcvmhkdaqkckikv6nnkbsqrn1oje.apps.googleusercontent.com";
   const DRIVE_SCOPE    = "https://www.googleapis.com/auth/drive.file";
+  // Browser key from Google Cloud Console, restricted to the Picker API + this domain.
+  // Required for "Connect a shared team" (Google Picker). Leave blank to disable that feature.
+  const PICKER_API_KEY = "";
+  const [pickerReady, setPickerReady] = useState(false);
+
+  useEffect(() => {
+    if (!PICKER_API_KEY) return; // Picker feature disabled until a key is configured
+    let cancelled = false;
+    const tryLoad = () => {
+      if (cancelled) return;
+      if (window.gapi) {
+        window.gapi.load("picker", () => { if (!cancelled) setPickerReady(true); });
+      } else {
+        setTimeout(tryLoad, 300);
+      }
+    };
+    tryLoad();
+    return () => { cancelled = true; };
+  }, []);
 
   const [driveUser,       setDriveUser]       = useState(null);   // { name, email, picture, accessToken, expiresAt }
   const [reachFolderId,   setReachFolderId]   = useState(null);   // Google Drive folder ID for "Reach Analytics"
@@ -1942,7 +1962,8 @@ function App() {
 
   const teamFolderIdsRef = useRef({});
 
-  const ensureTeamFolder = async (token, teamId, teamName) => {
+  const ensureTeamFolder = async (token, teamId, teamName, sharedFolderId) => {
+    if (sharedFolderId) { teamFolderIdsRef.current[teamId] = sharedFolderId; return sharedFolderId; }
     if (teamFolderIdsRef.current[teamId]) return teamFolderIdsRef.current[teamId];
     const parentId = await ensureReachFolder(token);
     const folderName = teamName || teamId;
@@ -2103,7 +2124,7 @@ function App() {
   const driveSaveSubgroups = async (csvText, tokenOverride) => {
     return withToken(async (token) => {
       const sgFileName = (activeTeam ? activeTeam.id + "_" : "") + "subgroups.csv";
-      const teamFolder = activeTeam ? await ensureTeamFolder(token, activeTeam.id, activeTeam.name) : await ensureReachFolder(token);
+      const teamFolder = activeTeam ? await ensureTeamFolder(token, activeTeam.id, activeTeam.name, activeTeam.folderId) : await ensureReachFolder(token);
       const listResp = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${sgFileName}' and '${teamFolder}' in parents and trashed=false&fields=files(id,name)`, {
         headers: { Authorization: "Bearer " + token }
       });
@@ -2219,7 +2240,7 @@ function App() {
         headers = { Authorization: "Bearer " + token, "Content-Type": "text/csv" };
       } else {
         const boundary = "boundary_ic_analytics";
-        const teamFolder2 = activeTeam ? await ensureTeamFolder(token, activeTeam.id, activeTeam.name) : await ensureReachFolder(token);
+        const teamFolder2 = activeTeam ? await ensureTeamFolder(token, activeTeam.id, activeTeam.name, activeTeam.folderId) : await ensureReachFolder(token);
         const metadata = JSON.stringify({ name: fileName, parents: [teamFolder2] });
         url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
         method = "POST";
@@ -2266,7 +2287,7 @@ function App() {
     const json = JSON.stringify(state);
 
     const doSave = async (token) => {
-      const teamFolder = activeTeam ? await ensureTeamFolder(token, activeTeam.id, activeTeam.name) : await ensureReachFolder(token);
+      const teamFolder = activeTeam ? await ensureTeamFolder(token, activeTeam.id, activeTeam.name, activeTeam.folderId) : await ensureReachFolder(token);
       const listResp = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${teamFolder}' in parents and trashed=false&fields=files(id,name)`, {
         headers: { Authorization: "Bearer " + token }
       });
@@ -2307,7 +2328,7 @@ function App() {
     withToken(async (token) => {
       let fileId = rf ? rf.id : null;
       if (!fileId) {
-        const teamFolder = await ensureTeamFolder(token, team.id, team.name);
+        const teamFolder = await ensureTeamFolder(token, team.id, team.name, team.folderId);
         const fileName = team.id + "_report.json";
         const listResp = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${teamFolder}' in parents and trashed=false&fields=files(id,name)`, {
           headers: { Authorization: "Bearer " + token }
@@ -2440,7 +2461,7 @@ function App() {
   const driveSaveFacilDraft = async (draft) => {
     if (!activeTeam) return;
     await withToken(async (token) => {
-      const teamFolder = await ensureTeamFolder(token, activeTeam.id, activeTeam.name);
+      const teamFolder = await ensureTeamFolder(token, activeTeam.id, activeTeam.name, activeTeam.folderId);
       const fileName = activeTeam.id + "_facil_draft.json";
       await driveUpsertJSON(token, fileName, JSON.stringify(draft), teamFolder);
     });
@@ -2449,7 +2470,7 @@ function App() {
   const driveSaveFacilNotes = async (notes) => {
     if (!activeTeam) return;
     await withToken(async (token) => {
-      const teamFolder = await ensureTeamFolder(token, activeTeam.id, activeTeam.name);
+      const teamFolder = await ensureTeamFolder(token, activeTeam.id, activeTeam.name, activeTeam.folderId);
       const assessName = (notes.assessmentName || "session").replace(/[^a-zA-Z0-9]/g, "_");
       const dateStamp = (notes.completedAt || new Date().toISOString()).slice(0, 10).replace(/-/g, "");
       const fileName = activeTeam.id + "_facil_notes_" + assessName + "_" + dateStamp + ".json";
@@ -2458,7 +2479,7 @@ function App() {
   };
 
   const driveListFacilNotes = async (team, token) => {
-    const teamFolder = await ensureTeamFolder(token, team.id, team.name);
+    const teamFolder = await ensureTeamFolder(token, team.id, team.name, team.folderId);
     const searchResp = await fetch(
       `https://www.googleapis.com/drive/v3/files?q=name contains '_facil_notes_' and '${teamFolder}' in parents and trashed=false&fields=files(id,name,createdTime)&orderBy=createdTime desc`,
       { headers: { Authorization: "Bearer " + token } }
@@ -2491,14 +2512,14 @@ function App() {
   const driveSaveInterventionLog = async (log) => {
     if (!activeTeam) return;
     await withToken(async (token) => {
-      const teamFolder = await ensureTeamFolder(token, activeTeam.id, activeTeam.name);
+      const teamFolder = await ensureTeamFolder(token, activeTeam.id, activeTeam.name, activeTeam.folderId);
       await driveUpsertJSON(token, activeTeam.id + "_intervention_log.json", JSON.stringify(log), teamFolder);
     });
   };
 
   const driveLoadInterventionLog = async (team, token) => {
     try {
-      const teamFolder = await ensureTeamFolder(token, team.id, team.name);
+      const teamFolder = await ensureTeamFolder(token, team.id, team.name, team.folderId);
       const fileName = team.id + "_intervention_log.json";
       const searchResp = await fetch(
         `https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${teamFolder}' in parents and trashed=false&fields=files(id,name)`,
@@ -2568,7 +2589,7 @@ function App() {
 
 
   const driveLoadFacilDraft = async (team, token) => {
-    const teamFolder = await ensureTeamFolder(token, team.id, team.name);
+    const teamFolder = await ensureTeamFolder(token, team.id, team.name, team.folderId);
     const searchResp = await fetch(
       `https://www.googleapis.com/drive/v3/files?q=name='${team.id}_facil_draft.json' and '${teamFolder}' in parents and trashed=false&fields=files(id,name)`,
       { headers: { Authorization: "Bearer " + token } }
@@ -2794,7 +2815,7 @@ function App() {
     }).catch(() => setNameMap({}));
     const teamId = team.id;
     withToken(async (token) => {
-      const teamFolder = await ensureTeamFolder(token, teamId, team.name);
+      const teamFolder = await ensureTeamFolder(token, teamId, team.name, team.folderId);
       const resp = await fetch(`https://www.googleapis.com/drive/v3/files?q='${teamFolder}' in parents and trashed=false&fields=files(id,name)`, {
         headers: { Authorization: "Bearer " + token }
       });
@@ -3492,7 +3513,7 @@ function App() {
     withToken(async (token) => {
       const updated = await Promise.all(teams.map(async (team) => {
         try {
-          const folderId = await ensureTeamFolder(token, team.id, team.name);
+          const folderId = await ensureTeamFolder(token, team.id, team.name, team.folderId);
           const resp = await fetch(
             `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false&fields=files(id,name)`,
             { headers: { Authorization: "Bearer " + token } }
@@ -3519,6 +3540,252 @@ function App() {
     setEditingTeamId(null);
   };
 
+  // A team can be edited if it's your own team, or a shared team where you were granted "owner" (editor) access.
+  const canEditTeam = (team) => !team.isShared || team.myRole === "owner";
+
+  // Opens Google Picker scoped to folders so the user can select a Team folder someone else
+  // shared with them via Drive. Stays within the drive.file scope: Picker grants per-file
+  // access to whatever gets selected, without Reach ever requesting broader Drive access.
+  const openSharedTeamPicker = (token) => new Promise((resolve, reject) => {
+    if (!window.google?.picker) { reject(new Error("Picker isn't ready yet — try again in a moment.")); return; }
+    const view = new window.google.picker.DocsView(window.google.picker.ViewId.FOLDERS)
+      .setSelectFolderEnabled(true)
+      .setIncludeFolders(true)
+      .setOwnedByMe(false);
+    const picker = new window.google.picker.PickerBuilder()
+      .setOAuthToken(token)
+      .setDeveloperKey(PICKER_API_KEY)
+      .addView(view)
+      .setTitle("Select the shared team folder")
+      .setCallback(data => {
+        if (data.action === window.google.picker.Action.PICKED) resolve(data.docs[0]);
+        else if (data.action === window.google.picker.Action.CANCEL) resolve(null);
+      })
+      .build();
+    picker.setVisible(true);
+  });
+
+  const connectSharedTeam = () => {
+    if (!PICKER_API_KEY) {
+      alert("Connecting shared teams isn't set up yet in this copy of Reach — it needs a Google Picker API key configured by whoever manages Reach for your school.");
+      return;
+    }
+    if (!pickerReady) { alert("Still loading Google Picker — try again in a moment."); return; }
+    withToken(async token => {
+      const picked = await openSharedTeamPicker(token);
+      if (!picked) return; // cancelled
+      if (teams.some(t => t.isShared && t.folderId === picked.id)) {
+        alert(`"${picked.name}" is already in your Shared with Me list.`);
+        return;
+      }
+      let myRole = "observer", sharedByEmail = "";
+      try {
+        const metaResp = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${picked.id}?fields=capabilities,owners,name`,
+          { headers: { Authorization: "Bearer " + token } }
+        );
+        const meta = await metaResp.json();
+        myRole = meta?.capabilities?.canEdit ? "owner" : "observer";
+        sharedByEmail = meta?.owners?.[0]?.emailAddress || "";
+      } catch (e) { /* fall back to observer if we can't confirm capability */ }
+      const newTeam = { id: "shared_" + picked.id, name: picked.name, isShared: true, myRole, folderId: picked.id, sharedByEmail };
+      const updated = [...teams, newTeam];
+      setTeams(updated);
+      driveSaveTeams(updated);
+    });
+  };
+
+  const removeSharedTeam = (team) => {
+    if (!window.confirm(`Remove "${team.name}" from your Shared with Me list? This only affects your view — the owner's team and data are unaffected.`)) return;
+    const updated = teams.filter(t => t.id !== team.id);
+    setTeams(updated);
+    driveSaveTeams(updated);
+  };
+
+  const renderTeamCard = (team) => {
+    const shared = !!team.isShared;
+    const editable = canEditTeam(team);
+    return (
+                  <div key={team.id}
+                    style={{ background: "white", border: `1px solid ${confirmDeleteId === team.id ? "#fca5a5" : "#e2e8f0"}`, borderRadius: 12, padding: "1.25rem 1.4rem", fontFamily: "inherit", boxShadow: "0 1px 4px rgba(15,23,42,0.06)", borderTop: `3px solid ${confirmDeleteId === team.id ? "#dc2626" : shared ? "#7c3aed" : "#0f766e"}`, display: "flex", flexDirection: "column", gap: "0.75rem", transition: "border-color 0.15s" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <div style={{ flex: 1 }}>
+                        {!shared && editingTeamId === team.id ? (
+                          <input
+                            autoFocus
+                            value={editingTeamName}
+                            onChange={e => setEditingTeamName(e.target.value)}
+                            onBlur={() => renameTeam(team, editingTeamName)}
+                            onKeyDown={e => { if (e.key === "Enter") renameTeam(team, editingTeamName); if (e.key === "Escape") setEditingTeamId(null); }}
+                            style={{ fontWeight: 700, color: "#0f172a", fontSize: "1.32rem", width: "100%", border: "none", borderBottom: "2px solid #6d28d9", outline: "none", background: "transparent", padding: "0 0 0.1rem", fontFamily: "inherit", marginBottom: "0.3rem" }}
+                          />
+                        ) : (
+                          <div
+                            onClick={() => { if (!shared) { setEditingTeamId(team.id); setEditingTeamName(team.name); } }}
+                            title={shared ? team.name : "Click to rename"}
+                            style={{ fontWeight: 700, color: "#0f172a", fontSize: "1.32rem", marginBottom: "0.3rem", cursor: shared ? "default" : "text" }}>
+                            {team.name}
+                          </div>
+                        )}
+                        {shared ? (
+                          <div style={{ fontSize: "0.8rem", color: "#7c3aed", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.3rem" }}>
+                            {team.myRole === "owner" ? "✎ Shared with you · Can edit" : "👁 Shared with you · View only"}
+                            {team.sharedByEmail && <span style={{ color: "#94a3b8", fontWeight: 400 }}>· from {team.sharedByEmail}</span>}
+                          </div>
+                        ) : team.lastAssessment
+                          ? <div style={{ fontSize: "0.86rem", color: "#64748b" }}>
+                              <span style={{ color: "#0f766e", fontWeight: 600 }}>Last: </span>{team.lastAssessment}
+                              {team.lastDate && <span style={{ color: "#94a3b8", marginLeft: "0.4rem" }}>· {team.lastDate}</span>}
+                            </div>
+                          : <div style={{ fontSize: "0.86rem", color: "#94a3b8", fontStyle: "italic" }}>No assessments yet</div>
+                        }
+                      </div>
+                      {confirmDeleteId !== team.id && !shared && (
+                        <div style={{ display: "flex", gap: "0.25rem", flexShrink: 0, paddingLeft: "0.5rem" }}>
+                          
+                          <button onClick={() => archiveTeam(team.id)}
+                            title="Archive team"
+                            style={{ background: "none", border: "none", color: "#cbd5e1", cursor: "pointer", fontSize: "1.06rem", padding: "0.1rem 0.2rem", lineHeight: 1 }}
+                            onMouseEnter={e => e.currentTarget.style.color = "#94a3b8"}
+                            onMouseLeave={e => e.currentTarget.style.color = "#cbd5e1"}>
+                            📦
+                          </button>
+                          <button onClick={() => setConfirmDeleteId(team.id)}
+                            title="Delete team"
+                            style={{ background: "none", border: "none", color: "#cbd5e1", cursor: "pointer", fontSize: "1.03rem", padding: "0.1rem 0.2rem", lineHeight: 1 }}
+                            onMouseEnter={e => e.currentTarget.style.color = "#dc2626"}
+                            onMouseLeave={e => e.currentTarget.style.color = "#cbd5e1"}>
+                            ✕
+                          </button>
+                        </div>
+                      )}
+                      {shared && (
+                        <button onClick={() => removeSharedTeam(team)}
+                          title="Remove from your list (doesn't affect the owner's team)"
+                          style={{ background: "none", border: "none", color: "#cbd5e1", cursor: "pointer", fontSize: "1.03rem", padding: "0.1rem 0.2rem", lineHeight: 1, flexShrink: 0 }}
+                          onMouseEnter={e => e.currentTarget.style.color = "#dc2626"}
+                          onMouseLeave={e => e.currentTarget.style.color = "#cbd5e1"}>
+                          ✕
+                        </button>
+                      )}
+                    </div>
+
+                    {confirmDeleteId === team.id ? (
+                      <div>
+                        <div style={{ fontSize: "0.86rem", color: "#dc2626", fontWeight: 600, marginBottom: "0.5rem" }}>
+                          Delete "{team.name}"? This removes the team and all its saved data from Drive permanently.
+                        </div>
+                        <div style={{ display: "flex", gap: "0.5rem" }}>
+                          <button onClick={() => deleteTeam(team.id)}
+                            style={{ flex: 1, background: "#dc2626", color: "white", border: "none", borderRadius: 7, padding: "0.4rem 0.6rem", fontSize: "0.86rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                            Yes, delete
+                          </button>
+                          <button onClick={() => setConfirmDeleteId(null)}
+                            style={{ flex: 1, background: "white", color: "#475569", border: "1px solid #e2e8f0", borderRadius: 7, padding: "0.4rem 0.6rem", fontSize: "0.86rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
+                        {team.lastAssessment && (
+                          <div data-dropdown style={{ position:"relative", flex:"1 1 40%" }}>
+                            <button data-dd-toggle onClick={() => setExpandedReportId(expandedReportId === team.id ? null : team.id)}
+                              style={{ width:"100%", background:"linear-gradient(135deg,#0f766e,#0d9488)", color:"white", border:"none", borderRadius:7, padding:"0.4rem 0.5rem", fontSize:"0.8rem", fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
+                              📈 Report ▾
+                            </button>
+                            {expandedReportId === team.id && (
+                              <div style={{ position:"absolute", bottom:"100%", left:0, right:0, background:"white", border:"1px solid #e2e8f0", borderRadius:8, boxShadow:"0 4px 16px rgba(15,23,42,0.12)", zIndex:50, marginBottom:"0.2rem", overflow:"hidden" }}>
+                                {(team.reportFiles && team.reportFiles.length > 0) ? team.reportFiles.map(rf => {
+                                  const lbl = rf.name.replace(team.id + "_", "").replace("_report.json", "").replace(/_/g, " ");
+                                  return (<button key={rf.id} onClick={() => { setExpandedReportId(null); openTeamReport(team, rf); }}
+                                    style={{ display:"block", width:"100%", background:"none", border:"none", borderBottom:"1px solid #f1f5f9", padding:"0.45rem 0.65rem", fontSize:"0.86rem", fontWeight:600, color:"#0f766e", cursor:"pointer", fontFamily:"inherit", textAlign:"left" }}
+                                    onMouseEnter={e => e.currentTarget.style.background="#f0fdfa"} onMouseLeave={e => e.currentTarget.style.background="none"}>
+                                    {lbl}
+                                  </button>);
+                                }) : <div style={{ padding:"0.6rem 0.65rem", fontSize:"0.82rem", color:"#94a3b8" }}>No reports yet</div>}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {editable ? (
+                          team.analyticsFiles && team.analyticsFiles.length > 0 ? (
+                            <div data-dropdown style={{ position:"relative", flex:"1 1 40%" }}>
+                              <button data-dd-toggle onClick={() => setExpandedTeamId(expandedTeamId === team.id ? null : team.id)}
+                                style={{ width:"100%", background:"white", color:"#0f766e", border:"1px solid #99f6e4", borderRadius:7, padding:"0.4rem 0.5rem", fontSize:"0.8rem", fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
+                                {expandedTeamId === team.id ? "▲ Continue" : "▼ Continue"}
+                              </button>
+                              <button onClick={() => openTeam(team)}
+                                style={{ flex: "1 1 40%", background: "white", color: "#64748b", border: "1px solid #e2e8f0", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                                ＋ New
+                              </button>
+                            </div>
+                          ) : (
+                            <button onClick={() => openTeam(team)}
+                              style={{ flex: "1 1 40%", background: "white", color: "#7c3aed", border: "1px solid #ddd6fe", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                              View →
+                            </button>
+                          )
+                        ) : team.lastAssessment ? (
+                          <button onClick={() => openTeam(team)}
+                            style={{ flex: "1 1 40%", background: "white", color: "#7c3aed", border: "1px solid #ddd6fe", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                            View →
+                          </button>
+                        ) : null}
+                        {expandedTeamId === team.id && editable && (
+                              <div style={{ marginTop: "0.4rem", background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 8, overflow: "hidden" }}>
+                                {(team.analyticsFiles && team.analyticsFiles.length > 0) ? (
+                                  <>
+                                    {team.analyticsFiles.slice().reverse().map(f => {
+                                      const label = f.name.replace(team.id + "_", "").replace("_Analytics.csv", "").replace(/_/g, " ");
+                                      return (
+                                        <button key={f.id} onClick={() => openTeamContinue(team, f)}
+                                          style={{ display: "block", width: "100%", background: "none", border: "none", borderBottom: "1px solid #ccfbf1", padding: "0.5rem 0.75rem", fontSize: "0.86rem", fontWeight: 600, color: "#0f766e", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
+                                          onMouseEnter={e => e.currentTarget.style.background = "#ccfbf1"}
+                                          onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                          → {label}
+                                        </button>
+                                      );
+                                    })}
+                                    <button onClick={() => openTeamContinue(team, null)}
+                                      style={{ display: "block", width: "100%", background: "none", border: "none", padding: "0.4rem 0.75rem", fontSize: "0.78rem", color: "#64748b", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
+                                      onMouseEnter={e => e.currentTarget.style.background = "#e0fdf4"}
+                                      onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                      Browse all sessions in Upload tab →
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button onClick={() => openTeamContinue(team, null)}
+                                    style={{ display: "block", width: "100%", background: "none", border: "none", padding: "0.5rem 0.75rem", fontSize: "0.86rem", color: "#0f766e", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+                                    → Open Upload tab to choose a prior session
+                                  </button>
+                                )}
+                              </div>
+                        )}
+                        {!team.lastAssessment && (
+                          editable ? (
+                            <button onClick={() => openTeam(team)}
+                              style={{ flex: "1 1 40%", background: "linear-gradient(135deg, #0f766e, #0d9488)", color: "white", border: "none", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                              Open →
+                            </button>
+                          ) : (
+                            <button onClick={() => openTeam(team)}
+                              style={{ flex: "1 1 40%", background: "white", color: "#7c3aed", border: "1px solid #ddd6fe", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                              View →
+                            </button>
+                          )
+                        )}
+                        {(!shared || editable) && (
+                          <button onClick={() => openTeamSettings(team)}
+                            style={{ flex: "1 1 40%", background: "white", color: "#64748b", border: "1px solid #e2e8f0", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                            ⚙ Settings
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+    );
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#f1f5f9" }}>
@@ -4780,7 +5047,7 @@ function App() {
             )}
 
             {/* Teams section — only show when there are teams */}
-            {teamsLoaded && teams.filter(t => !t.archived).length > 0 && (
+            {teamsLoaded && teams.filter(t => !t.archived && !t.isShared).length > 0 && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
               <h2 style={{ fontFamily: "'Lora', serif", fontWeight: 700, color: "#0f172a", fontSize: "1.32rem", margin: 0 }}>
                 Your Teams
@@ -4789,171 +5056,9 @@ function App() {
             )}
 
             {/* Team cards grid */}
-            {teamsLoaded && teams.filter(t => !t.archived).length > 0 && (
+            {teamsLoaded && teams.filter(t => !t.archived && !t.isShared).length > 0 && (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
-                {teams.filter(t => !t.archived).map(team => (
-                  <div key={team.id}
-                    style={{ background: "white", border: `1px solid ${confirmDeleteId === team.id ? "#fca5a5" : "#e2e8f0"}`, borderRadius: 12, padding: "1.25rem 1.4rem", fontFamily: "inherit", boxShadow: "0 1px 4px rgba(15,23,42,0.06)", borderTop: `3px solid ${confirmDeleteId === team.id ? "#dc2626" : "#0f766e"}`, display: "flex", flexDirection: "column", gap: "0.75rem", transition: "border-color 0.15s" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <div style={{ flex: 1 }}>
-                        {editingTeamId === team.id ? (
-                          <input
-                            autoFocus
-                            value={editingTeamName}
-                            onChange={e => setEditingTeamName(e.target.value)}
-                            onBlur={() => renameTeam(team, editingTeamName)}
-                            onKeyDown={e => { if (e.key === "Enter") renameTeam(team, editingTeamName); if (e.key === "Escape") setEditingTeamId(null); }}
-                            style={{ fontWeight: 700, color: "#0f172a", fontSize: "1.32rem", width: "100%", border: "none", borderBottom: "2px solid #6d28d9", outline: "none", background: "transparent", padding: "0 0 0.1rem", fontFamily: "inherit", marginBottom: "0.3rem" }}
-                          />
-                        ) : (
-                          <div
-                            onClick={() => { setEditingTeamId(team.id); setEditingTeamName(team.name); }}
-                            title="Click to rename"
-                            style={{ fontWeight: 700, color: "#0f172a", fontSize: "1.32rem", marginBottom: "0.3rem", cursor: "text" }}>
-                            {team.name}
-                          </div>
-                        )}
-                        {team.lastAssessment
-                          ? <div style={{ fontSize: "0.86rem", color: "#64748b" }}>
-                              <span style={{ color: "#0f766e", fontWeight: 600 }}>Last: </span>{team.lastAssessment}
-                              {team.lastDate && <span style={{ color: "#94a3b8", marginLeft: "0.4rem" }}>· {team.lastDate}</span>}
-                            </div>
-                          : <div style={{ fontSize: "0.86rem", color: "#94a3b8", fontStyle: "italic" }}>No assessments yet</div>
-                        }
-                      </div>
-                      {confirmDeleteId !== team.id && (
-                        <div style={{ display: "flex", gap: "0.25rem", flexShrink: 0, paddingLeft: "0.5rem" }}>
-                          
-                          <button onClick={() => archiveTeam(team.id)}
-                            title="Archive team"
-                            style={{ background: "none", border: "none", color: "#cbd5e1", cursor: "pointer", fontSize: "1.06rem", padding: "0.1rem 0.2rem", lineHeight: 1 }}
-                            onMouseEnter={e => e.currentTarget.style.color = "#94a3b8"}
-                            onMouseLeave={e => e.currentTarget.style.color = "#cbd5e1"}>
-                            📦
-                          </button>
-                          <button onClick={() => setConfirmDeleteId(team.id)}
-                            title="Delete team"
-                            style={{ background: "none", border: "none", color: "#cbd5e1", cursor: "pointer", fontSize: "1.03rem", padding: "0.1rem 0.2rem", lineHeight: 1 }}
-                            onMouseEnter={e => e.currentTarget.style.color = "#dc2626"}
-                            onMouseLeave={e => e.currentTarget.style.color = "#cbd5e1"}>
-                            ✕
-                          </button>
-                        </div>
-                      )}
-                    </div>
-
-                    {confirmDeleteId === team.id ? (
-                      <div>
-                        <div style={{ fontSize: "0.86rem", color: "#dc2626", fontWeight: 600, marginBottom: "0.5rem" }}>
-                          Delete "{team.name}"? This removes the team and all its saved data from Drive permanently.
-                        </div>
-                        <div style={{ display: "flex", gap: "0.5rem" }}>
-                          <button onClick={() => deleteTeam(team.id)}
-                            style={{ flex: 1, background: "#dc2626", color: "white", border: "none", borderRadius: 7, padding: "0.4rem 0.6rem", fontSize: "0.86rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                            Yes, delete
-                          </button>
-                          <button onClick={() => setConfirmDeleteId(null)}
-                            style={{ flex: 1, background: "white", color: "#475569", border: "1px solid #e2e8f0", borderRadius: 7, padding: "0.4rem 0.6rem", fontSize: "0.86rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
-                        {team.lastAssessment && (
-                          <div data-dropdown style={{ position:"relative", flex:"1 1 40%" }}>
-                            <button data-dd-toggle onClick={() => setExpandedReportId(expandedReportId === team.id ? null : team.id)}
-                              style={{ width:"100%", background:"linear-gradient(135deg,#0f766e,#0d9488)", color:"white", border:"none", borderRadius:7, padding:"0.4rem 0.5rem", fontSize:"0.8rem", fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
-                              📈 Report ▾
-                            </button>
-                            {expandedReportId === team.id && (
-                              <div style={{ position:"absolute", bottom:"100%", left:0, right:0, background:"white", border:"1px solid #e2e8f0", borderRadius:8, boxShadow:"0 4px 16px rgba(15,23,42,0.12)", zIndex:50, marginBottom:"0.2rem", overflow:"hidden" }}>
-                                {(team.reportFiles && team.reportFiles.length > 0) ? team.reportFiles.map(rf => {
-                                  const lbl = rf.name.replace(team.id + "_", "").replace("_report.json", "").replace(/_/g, " ");
-                                  return (<button key={rf.id} onClick={() => { setExpandedReportId(null); openTeamReport(team, rf); }}
-                                    style={{ display:"block", width:"100%", background:"none", border:"none", borderBottom:"1px solid #f1f5f9", padding:"0.45rem 0.65rem", fontSize:"0.86rem", fontWeight:600, color:"#0f766e", cursor:"pointer", fontFamily:"inherit", textAlign:"left" }}
-                                    onMouseEnter={e => e.currentTarget.style.background="#f0fdfa"} onMouseLeave={e => e.currentTarget.style.background="none"}>
-                                    📈 {lbl}
-                                  </button>);
-                                }) : (
-                                  <button onClick={() => { setExpandedReportId(null); openTeamReport(team); }}
-                                    style={{ display:"block", width:"100%", background:"none", border:"none", padding:"0.45rem 0.65rem", fontSize:"0.86rem", fontWeight:600, color:"#0f766e", cursor:"pointer", fontFamily:"inherit", textAlign:"left" }}>
-                                    📈 Latest report
-                                  </button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        {team.lastFacilAssessment && (
-                          <button onClick={() => openTeamNotes(team)}
-                            style={{ flex: "1 1 40%", background: "white", color: "#6d28d9", border: "1px solid #6d28d9", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                            📋 Notes
-                          </button>
-                        )}
-                        {team.hasInterventionLog && (
-                          <button onClick={() => openTeamInterventions(team)}
-                            style={{ flex: "1 1 40%", background: "white", color: "#0369a1", border: "1px solid #0369a1", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                            🎯 Interventions
-                          </button>
-                        )}
-                        {team.lastAssessment ? (
-                          <div data-dropdown style={{ width: "100%" }}>
-                            <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
-                              <button data-dd-toggle onClick={() => setExpandedTeamId(expandedTeamId === team.id ? null : team.id)}
-                                style={{ flex: "1 1 40%", background: "linear-gradient(135deg, #0f766e, #0d9488)", color: "white", border: "none", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                                {expandedTeamId === team.id ? "▲ Continue" : "▼ Continue"}
-                              </button>
-                              <button onClick={() => openTeam(team)}
-                                style={{ flex: "1 1 40%", background: "white", color: "#64748b", border: "1px solid #e2e8f0", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
-                                ＋ New
-                              </button>
-                            </div>
-                            {expandedTeamId === team.id && (
-                              <div style={{ marginTop: "0.4rem", background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 8, overflow: "hidden" }}>
-                                {(team.analyticsFiles && team.analyticsFiles.length > 0) ? (
-                                  <>
-                                    {team.analyticsFiles.slice().reverse().map(f => {
-                                      const label = f.name.replace(team.id + "_", "").replace("_Analytics.csv", "").replace(/_/g, " ");
-                                      return (
-                                        <button key={f.id} onClick={() => openTeamContinue(team, f)}
-                                          style={{ display: "block", width: "100%", background: "none", border: "none", borderBottom: "1px solid #ccfbf1", padding: "0.5rem 0.75rem", fontSize: "0.86rem", fontWeight: 600, color: "#0f766e", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
-                                          onMouseEnter={e => e.currentTarget.style.background = "#ccfbf1"}
-                                          onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                                          → {label}
-                                        </button>
-                                      );
-                                    })}
-                                    <button onClick={() => openTeamContinue(team, null)}
-                                      style={{ display: "block", width: "100%", background: "none", border: "none", padding: "0.4rem 0.75rem", fontSize: "0.78rem", color: "#64748b", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
-                                      onMouseEnter={e => e.currentTarget.style.background = "#e0fdf4"}
-                                      onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                                      Browse all sessions in Upload tab →
-                                    </button>
-                                  </>
-                                ) : (
-                                  <button onClick={() => openTeamContinue(team, null)}
-                                    style={{ display: "block", width: "100%", background: "none", border: "none", padding: "0.5rem 0.75rem", fontSize: "0.86rem", color: "#0f766e", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
-                                    → Open Upload tab to choose a prior session
-                                  </button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <button onClick={() => openTeam(team)}
-                            style={{ flex: "1 1 40%", background: "linear-gradient(135deg, #0f766e, #0d9488)", color: "white", border: "none", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                            Open →
-                          </button>
-                        )}
-                        <button onClick={() => openTeamSettings(team)}
-                          style={{ flex: "1 1 40%", background: "white", color: "#64748b", border: "1px solid #e2e8f0", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                          ⚙ Settings
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ))}
+                {teams.filter(t => !t.archived && !t.isShared).map(team => renderTeamCard(team))}
 
                 {/* New team card */}
                 <div style={{ background: "white", border: "2px dashed #cbd5e1", borderRadius: 12, padding: "1.25rem 1.4rem", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
@@ -4970,6 +5075,29 @@ function App() {
                     Create Team
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* Shared with Me section */}
+            {teamsLoaded && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem", marginTop: teams.filter(t => !t.archived && !t.isShared).length > 0 ? "2rem" : 0 }}>
+              <h2 style={{ fontFamily: "'Lora', serif", fontWeight: 700, color: "#0f172a", fontSize: "1.32rem", margin: 0 }}>
+                Shared with Me
+              </h2>
+              <button onClick={connectSharedTeam}
+                style={{ background: "white", color: "#7c3aed", border: "1px solid #ddd6fe", borderRadius: 7, padding: "0.4rem 0.8rem", fontSize: "0.86rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                ＋ Connect a shared team
+              </button>
+            </div>
+            )}
+
+            {teamsLoaded && teams.filter(t => t.isShared).length > 0 ? (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
+                {teams.filter(t => t.isShared).map(team => renderTeamCard(team))}
+              </div>
+            ) : teamsLoaded && (
+              <div style={{ background: "white", border: "1px dashed #e2e8f0", borderRadius: 12, padding: "1.25rem 1.4rem", color: "#94a3b8", fontSize: "0.9rem", marginBottom: "1.5rem" }}>
+                No teams have been shared with you yet. When a colleague shares a team, use "Connect a shared team" to add it here.
               </div>
             )}
 
