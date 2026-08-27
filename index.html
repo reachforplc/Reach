@@ -3965,6 +3965,10 @@ function App() {
                             👥 Share{team.sharedWith && team.sharedWith.length > 0 ? ` (${team.sharedWith.length})` : ""}
                           </button>
                         )}
+                        <button onClick={() => openTeamNotes(team)}
+                          style={{ flex: "1 1 40%", background: "white", color: "#0f766e", border: "1px solid #99f6e4", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                          📝 Notes
+                        </button>
                       </div>
                     )}
                   </div>
