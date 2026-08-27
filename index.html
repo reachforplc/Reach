@@ -2019,8 +2019,8 @@ function App() {
       `https://www.googleapis.com/drive/v3/files?q=sharedWithMe=true and mimeType='application/vnd.google-apps.folder' and trashed=false and properties has { key='reachTeam' and value='true' }&fields=files(id,name,capabilities,owners,properties)`,
       { headers: { Authorization: "Bearer " + token } }
     );
-    if (!resp.ok) return [];
     const data = await resp.json();
+    if (!resp.ok) { console.error("Reach: shared-team discovery failed", resp.status, data?.error?.message); return []; }
     return (data.files || []).map(f => ({
       id: "shared_" + f.id,
       name: f.name,
@@ -3612,11 +3612,12 @@ function App() {
             { headers: { Authorization: "Bearer " + token } }
           );
           const data = await resp.json();
+          if (!resp.ok) throw new Error(`HTTP ${resp.status} listing team folder — ${data?.error?.message || "unknown error"}`);
           const allF=data.files||[];
           const files=allF.filter(f=>f.name.includes("_Analytics")).sort((a,b)=>b.name.localeCompare(a.name));
           const rFiles=allF.filter(f=>f.name.endsWith("_report.json")).sort((a,b)=>b.name.localeCompare(a.name));
           return{...team,analyticsFiles:files,reportFiles:rFiles};
-        } catch (e) { return team; }
+        } catch (e) { console.error("Reach: failed to load files for team", team.name, team.isShared ? "(shared, folderId=" + team.folderId + ")" : "", e); return team; }
       }));
       setTeams(updated);
     });
