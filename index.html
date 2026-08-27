@@ -1826,7 +1826,10 @@ function App() {
   }, [teamSettings.proficiencyThreshold, JSON.stringify(teamSettings.riskSettings)]);
 
   const GAPI_CLIENT_ID = "881323077562-olnslcvmhkdaqkckikv6nnkbsqrn1oje.apps.googleusercontent.com";
-  const DRIVE_SCOPE    = "https://www.googleapis.com/auth/drive.file";
+  // Full Drive scope — required so Reach can automatically discover team folders shared with
+  // the signed-in user (via "sharedWithMe") and both read and write their contents. This is a
+  // broader grant than the previous drive.file-only scope; see project notes on the tradeoff.
+  const DRIVE_SCOPE    = "https://www.googleapis.com/auth/drive";
   // Browser key from Google Cloud Console, restricted to the Picker API + this domain.
   // Required for "Connect a shared team" (Google Picker). Leave blank to disable that feature.
   const PICKER_API_KEY = "AIzaSyCCHsujwzBRFaFBAaqdgNAjVXCTM915SuA";
@@ -1852,6 +1855,7 @@ function App() {
   const [driveStatus,     setDriveStatus]     = useState("idle");
   const [driveMsg,        setDriveMsg]        = useState("");
   const [driveFiles,      setDriveFiles]      = useState([]);
+  const [manualSharedTeams, setManualSharedTeams] = useState([]);
   const [driveSubgroupFile, setDriveSubgroupFile] = useState(null);
   const [subgroupFromDrive, setSubgroupFromDrive] = useState(false);
   const [tokenExpired,    setTokenExpired]    = useState(false);
@@ -1968,6 +1972,19 @@ function App() {
   };
 
   const teamFolderIdsRef = useRef({});
+  const taggedFoldersRef = useRef({});
+
+  // Sets a private custom property on the folder so it can later be recognized as a
+  // Reach team folder when queried via "sharedWithMe" (properties are private to this app).
+  const tagTeamFolder = (token, folderId, teamId) => {
+    if (taggedFoldersRef.current[folderId]) return;
+    taggedFoldersRef.current[folderId] = true;
+    fetch(`https://www.googleapis.com/drive/v3/files/${folderId}?fields=id`, {
+      method: "PATCH",
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify({ properties: { reachTeam: "true", reachTeamId: teamId } })
+    }).catch(() => { taggedFoldersRef.current[folderId] = false; });
+  };
 
   const ensureTeamFolder = async (token, teamId, teamName, sharedFolderId) => {
     if (sharedFolderId) { teamFolderIdsRef.current[teamId] = sharedFolderId; return sharedFolderId; }
@@ -1981,24 +1998,65 @@ function App() {
     const folders = (await searchResp.json()).files || [];
     if (folders.length > 0) {
       teamFolderIdsRef.current[teamId] = folders[0].id;
+      tagTeamFolder(token, folders[0].id, teamId);
       return folders[0].id;
     }
     const createResp = await fetch("https://www.googleapis.com/drive/v3/files", {
       method: "POST",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
-      body: JSON.stringify({ name: folderName, mimeType: "application/vnd.google-apps.folder", parents: [parentId] })
+      body: JSON.stringify({ name: folderName, mimeType: "application/vnd.google-apps.folder", parents: [parentId], properties: { reachTeam: "true", reachTeamId: teamId } })
     });
     if (!createResp.ok) throw new Error("Could not create team folder in Drive");
     const folder = await createResp.json();
     teamFolderIdsRef.current[teamId] = folder.id;
+    taggedFoldersRef.current[folder.id] = true;
     return folder.id;
   };
+  // Finds folders tagged as Reach teams (via the private "reachTeam" property) that have been
+  // shared with the signed-in user, so they show up automatically without a manual connect step.
+  const driveListSharedTeams = async (token) => {
+    const resp = await fetch(
+      `https://www.googleapis.com/drive/v3/files?q=sharedWithMe=true and mimeType='application/vnd.google-apps.folder' and trashed=false and properties has { key='reachTeam' and value='true' }&fields=files(id,name,capabilities,owners,properties)`,
+      { headers: { Authorization: "Bearer " + token } }
+    );
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return (data.files || []).map(f => ({
+      id: "shared_" + f.id,
+      name: f.name,
+      isShared: true,
+      myRole: f.capabilities?.canEdit ? "owner" : "observer",
+      folderId: f.id,
+      sharedByEmail: f.owners?.[0]?.emailAddress || "",
+    }));
+  };
+
+  const refreshSharedTeams = () => {
+    withToken(async token => {
+      const shared = await driveListSharedTeams(token);
+      setTeams(prev => {
+        const owned = prev.filter(t => !t.isShared);
+        const manual = prev.filter(t => t.isShared && t.manual && !shared.some(s => s.folderId === t.folderId));
+        return [...owned, ...shared, ...manual];
+      });
+    });
+  };
+
   const driveListFiles = async (token) => {
     setDriveStatus("loading"); setDriveMsg("Loading your saved data…");
     driveLoadTeams(token);
     driveLoadMappings(token);
     driveLoadFileLabels(token);
     driveLoadNameMap(token);
+    driveLoadManualSharedTeams(token);
+    driveListSharedTeams(token).then(shared => {
+      if (!shared.length) return;
+      setTeams(prev => {
+        const owned = prev.filter(t => !t.isShared);
+        const manual = prev.filter(t => t.isShared && t.manual && !shared.some(s => s.folderId === t.folderId));
+        return [...owned, ...shared, ...manual];
+      });
+    }).catch(() => {});
     try {
       const folderId = await ensureReachFolder(token);
       const resp = await fetch(
@@ -2039,6 +2097,31 @@ function App() {
     }
     const resp = await fetch(url, { method, headers, body });
     if (!resp.ok) throw new Error(`HTTP ${resp.status} saving ${fileName}`);
+  };
+
+  const driveSaveManualSharedTeams = async (list) => {
+    setManualSharedTeams(list);
+    await withToken(token => driveUpsertJSON(token, "reach_manual_shared_teams.json", JSON.stringify(list)));
+  };
+
+  const driveLoadManualSharedTeams = (token) => {
+    fetch(`https://www.googleapis.com/drive/v3/files?q=name='reach_manual_shared_teams.json' and trashed=false&fields=files(id,name)`, {
+      headers: { Authorization: "Bearer " + token }
+    }).then(r => r.json()).then(data => {
+      const file = (data.files || [])[0];
+      if (!file) return;
+      fetch(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`, {
+        headers: { Authorization: "Bearer " + token }
+      }).then(r => r.json()).then(parsed => {
+        const list = Array.isArray(parsed) ? parsed : [];
+        setManualSharedTeams(list);
+        setTeams(prev => {
+          const existingFolderIds = new Set(prev.filter(t => t.isShared).map(t => t.folderId));
+          const toAdd = list.filter(t => !existingFolderIds.has(t.folderId));
+          return [...prev, ...toAdd];
+        });
+      }).catch(() => {});
+    }).catch(() => {});
   };
 
   const driveSaveMappings = async (mappings) => {
@@ -2365,13 +2448,13 @@ function App() {
         headers: { Authorization: "Bearer " + token }
       }).then(r => r.json()).then(parsed => {
         if (Array.isArray(parsed) && parsed.length > 0) {
-          setTeams(parsed);
+          setTeams(prev => [...parsed, ...prev.filter(t => t.isShared)]);
           setTeamsLoaded(true);
           if (isBackup) console.info("Reach: restored teams from backup file.");
         } else {
-          setTeams([]); setTeamsLoaded(true);
+          setTeams(prev => prev.filter(t => t.isShared)); setTeamsLoaded(true);
         }
-      }).catch(() => { setTeams([]); setTeamsLoaded(true); });
+      }).catch(() => { setTeams(prev => prev.filter(t => t.isShared)); setTeamsLoaded(true); });
     };
 
     ensureReachFolder(token).then(folderId => {
@@ -2387,23 +2470,23 @@ function App() {
           headers: { Authorization: "Bearer " + token }
         }).then(r => r.json()).then(parsed => {
           if (Array.isArray(parsed) && parsed.length > 0) {
-            setTeams(parsed); setTeamsLoaded(true);
+            setTeams(prev => [...parsed, ...prev.filter(t => t.isShared)]); setTeamsLoaded(true);
           } else if (backup) {
             loadFromFile(backup.id, true);
           } else {
-            setTeams([]); setTeamsLoaded(true);
+            setTeams(prev => prev.filter(t => t.isShared)); setTeamsLoaded(true);
           }
         }).catch(() => {
           if (backup) loadFromFile(backup.id, true);
-          else { setTeams([]); setTeamsLoaded(true); }
+          else { setTeams(prev => prev.filter(t => t.isShared)); setTeamsLoaded(true); }
         });
       } else if (backup) {
         loadFromFile(backup.id, true);
       } else {
-        setTeams([]); setTeamsLoaded(true);
+        setTeams(prev => prev.filter(t => t.isShared)); setTeamsLoaded(true);
       }
-    }).catch(() => { setTeams([]); setTeamsLoaded(true); });
-    }).catch(() => { setTeams([]); setTeamsLoaded(true); });
+    }).catch(() => { setTeams(prev => prev.filter(t => t.isShared)); setTeamsLoaded(true); });
+    }).catch(() => { setTeams(prev => prev.filter(t => t.isShared)); setTeamsLoaded(true); });
   };
 
   const DEFAULT_FACIL_SECTIONS = (sectionsData, growthData, reportData, itemReportData) => {
@@ -2769,8 +2852,9 @@ function App() {
   };
 
   const driveSaveTeams = async (updatedTeams) => {
+    const ownedOnly = updatedTeams.filter(t => !t.isShared);
     await withToken(async (token) => {
-      const json = JSON.stringify(updatedTeams);
+      const json = JSON.stringify(ownedOnly);
       await Promise.all([
         driveUpsertJSON(token, teamsFileName, json),
         driveUpsertJSON(token, teamsBackupFileName, json),
@@ -3685,19 +3769,16 @@ function App() {
         const meta = await metaResp.json();
         myRole = meta?.capabilities?.canEdit ? "owner" : "observer";
         sharedByEmail = meta?.owners?.[0]?.emailAddress || "";
+        // Best-effort: tag the folder so it's auto-discoverable next time too. Only works if we
+        // have write access to it; silently ignored otherwise (older shares granted view-only).
+        if (myRole === "owner") tagTeamFolder(token, picked.id, "shared_" + picked.id);
       } catch (e) { /* fall back to observer if we can't confirm capability */ }
-      const newTeam = { id: "shared_" + picked.id, name: picked.name, isShared: true, myRole, folderId: picked.id, sharedByEmail };
-      const updated = [...teams, newTeam];
-      setTeams(updated);
-      driveSaveTeams(updated);
+      // "manual: true" keeps this entry sticky across reloads even if it's never auto-discovered
+      // (e.g. it was shared before folder tagging existed, or we don't have write access to tag it).
+      const newTeam = { id: "shared_" + picked.id, name: picked.name, isShared: true, myRole, folderId: picked.id, sharedByEmail, manual: true };
+      driveSaveManualSharedTeams([...manualSharedTeams, newTeam]);
+      setTeams(prev => [...prev, newTeam]);
     });
-  };
-
-  const removeSharedTeam = (team) => {
-    if (!window.confirm(`Remove "${team.name}" from your Shared with Me list? This only affects your view — the owner's team and data are unaffected.`)) return;
-    const updated = teams.filter(t => t.id !== team.id);
-    setTeams(updated);
-    driveSaveTeams(updated);
   };
 
   const renderTeamCard = (team) => {
@@ -3756,15 +3837,6 @@ function App() {
                             ✕
                           </button>
                         </div>
-                      )}
-                      {shared && (
-                        <button onClick={() => removeSharedTeam(team)}
-                          title="Remove from your list (doesn't affect the owner's team)"
-                          style={{ background: "none", border: "none", color: "#cbd5e1", cursor: "pointer", fontSize: "1.03rem", padding: "0.1rem 0.2rem", lineHeight: 1, flexShrink: 0 }}
-                          onMouseEnter={e => e.currentTarget.style.color = "#dc2626"}
-                          onMouseLeave={e => e.currentTarget.style.color = "#cbd5e1"}>
-                          ✕
-                        </button>
                       )}
                     </div>
 
@@ -5261,20 +5333,28 @@ function App() {
               <h2 style={{ fontFamily: "'Lora', serif", fontWeight: 700, color: "#0f172a", fontSize: "1.32rem", margin: 0 }}>
                 Shared with Me
               </h2>
-              <button onClick={connectSharedTeam}
+              <button onClick={refreshSharedTeams}
                 style={{ background: "white", color: "#7c3aed", border: "1px solid #ddd6fe", borderRadius: 7, padding: "0.4rem 0.8rem", fontSize: "0.86rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                ＋ Connect a shared team
+                🔄 Refresh
               </button>
             </div>
             )}
 
             {teamsLoaded && teams.filter(t => t.isShared).length > 0 ? (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "1rem", marginBottom: "0.5rem" }}>
                 {teams.filter(t => t.isShared).map(team => renderTeamCard(team))}
               </div>
             ) : teamsLoaded && (
-              <div style={{ background: "white", border: "1px dashed #e2e8f0", borderRadius: 12, padding: "1.25rem 1.4rem", color: "#94a3b8", fontSize: "0.9rem", marginBottom: "1.5rem" }}>
-                No teams have been shared with you yet. When a colleague shares a team, use "Connect a shared team" to add it here.
+              <div style={{ background: "white", border: "1px dashed #e2e8f0", borderRadius: 12, padding: "1.25rem 1.4rem", color: "#94a3b8", fontSize: "0.9rem", marginBottom: "0.5rem" }}>
+                No teams have been shared with you yet. When a colleague shares a team with your email, it'll show up here automatically the next time you sign in — or hit Refresh above.
+              </div>
+            )}
+            {teamsLoaded && (
+              <div style={{ marginBottom: "1.5rem" }}>
+                <button onClick={connectSharedTeam}
+                  style={{ background: "none", border: "none", color: "#94a3b8", fontSize: "0.82rem", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", padding: 0 }}>
+                  Not seeing a team that was shared with you? Connect it manually
+                </button>
               </div>
             )}
 
