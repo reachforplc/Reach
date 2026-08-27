@@ -2580,8 +2580,10 @@ function App() {
       `https://www.googleapis.com/drive/v3/files?q=name contains '_facil_notes_' and '${teamFolder}' in parents and trashed=false&fields=files(id,name,createdTime)&orderBy=createdTime desc`,
       { headers: { Authorization: "Bearer " + token } }
     );
-    const files = (await searchResp.json()).files || [];
-    return files.filter(f => f.name.startsWith(team.id + "_facil_notes_"));
+    // Folder scoping (parents=teamFolder) already guarantees these belong to this team —
+    // no need to also match the id prefix in the filename, which breaks for shared teams
+    // (their synthetic "shared_<folderId>" id never matches the owner's real team id).
+    return (await searchResp.json()).files || [];
   };
 
   const driveLoadFacilNotesById = async (fileId, token) => {
@@ -2609,16 +2611,24 @@ function App() {
     if (!activeTeam) return;
     await withToken(async (token) => {
       const teamFolder = await ensureTeamFolder(token, activeTeam.id, activeTeam.name, activeTeam.folderId);
-      await driveUpsertJSON(token, activeTeam.id + "_intervention_log.json", JSON.stringify(log), teamFolder);
+      // Find any existing intervention log in this folder by suffix (not by team.id prefix —
+      // a shared team's synthetic id never matches the owner's real file, which would otherwise
+      // cause the owner and a shared editor to silently diverge onto two separate files).
+      const searchResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=name contains '_intervention_log.json' and '${teamFolder}' in parents and trashed=false&fields=files(id,name)`,
+        { headers: { Authorization: "Bearer " + token } }
+      );
+      const existing = ((await searchResp.json()).files || [])[0];
+      const fileName = existing ? existing.name : (activeTeam.id + "_intervention_log.json");
+      await driveUpsertJSON(token, fileName, JSON.stringify(log), teamFolder);
     });
   };
 
   const driveLoadInterventionLog = async (team, token) => {
     try {
       const teamFolder = await ensureTeamFolder(token, team.id, team.name, team.folderId);
-      const fileName = team.id + "_intervention_log.json";
       const searchResp = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${teamFolder}' in parents and trashed=false&fields=files(id,name)`,
+        `https://www.googleapis.com/drive/v3/files?q=name contains '_intervention_log.json' and '${teamFolder}' in parents and trashed=false&fields=files(id,name)`,
         { headers: { Authorization: "Bearer " + token } }
       );
       const file = ((await searchResp.json()).files || [])[0];
