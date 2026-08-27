@@ -1725,6 +1725,12 @@ function App() {
   const [nameMap, setNameMap] = useState(SNAPSHOT?.nameMap ?? {}); // rawName -> canonicalName
   const [pendingMismatches, setPendingMismatches] = useState([]);
   const [activeTab, setActiveTab] = useState(SNAPSHOT ? "analysis" : "upload");
+
+  React.useEffect(() => {
+    if (isWorkspaceReadOnly && ["settings", "upload", "subgroups"].includes(activeTab)) {
+      setActiveTab(activeTeam?.reportFiles?.length > 0 ? "analysis" : "data");
+    }
+  }, [isWorkspaceReadOnly, activeTeam?.id]);
   const [report, setReport]         = useState(SNAPSHOT?.report ?? null);
   const [itemReport, setItemReport] = useState(SNAPSHOT?.itemReport ?? null);
   const [expandedItem, setExpandedItem] = useState(null);
@@ -3634,6 +3640,7 @@ function App() {
 
   // A team can be edited if it's your own team, or a shared team where you were granted "owner" (editor) access.
   const canEditTeam = (team) => !team.isShared || team.myRole === "owner";
+  const isWorkspaceReadOnly = activeTeam ? !canEditTeam(activeTeam) : false;
 
   // Opens Google Picker scoped to folders so the user can select a Team folder someone else
   // shared with them via Drive. Stays within the drive.file scope: Picker grants per-file
@@ -4217,13 +4224,13 @@ function App() {
                               <div style={{ fontSize: "0.78rem", fontWeight: 700, color: "#6d28d9", marginBottom: "0.3rem" }}>Intervention Log</div>
                               <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
                                 {iChecklist.map((item, idx) => (
-                                  <label key={idx} style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.98rem", cursor: "pointer" }}>
-                                    <input type="checkbox" checked={!!(iLogEntry.checklist || {})[item]} onChange={e => saveInterventionEntry(s.name, { ...iLogEntry, checklist: { ...(iLogEntry.checklist || {}), [item]: e.target.checked } })} style={{ accentColor: "#6d28d9" }} />
+                                  <label key={idx} style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.98rem", cursor: isWorkspaceReadOnly ? "default" : "pointer" }}>
+                                    <input type="checkbox" disabled={isWorkspaceReadOnly} checked={!!(iLogEntry.checklist || {})[item]} onChange={e => saveInterventionEntry(s.name, { ...iLogEntry, checklist: { ...(iLogEntry.checklist || {}), [item]: e.target.checked } })} style={{ accentColor: "#6d28d9" }} />
                                     <span style={{ textDecoration: (iLogEntry.checklist || {})[item] ? "line-through" : "none", opacity: (iLogEntry.checklist || {})[item] ? 0.5 : 1 }}>{item}</span>
                                   </label>
                                 ))}
                               </div>
-                              <textarea value={iLogEntry.notes || ""} onChange={e => saveInterventionEntry(s.name, { ...iLogEntry, notes: e.target.value })} placeholder={"Notes about " + s.name + "…"} style={{ width: "100%", border: "1px solid #e9d5ff", borderRadius: 5, padding: "0.35rem 0.5rem", fontSize: "0.98rem", fontFamily: "inherit", resize: "vertical", minHeight: 60, marginTop: "0.4rem", background: "white" }} />
+                              <textarea value={iLogEntry.notes || ""} disabled={isWorkspaceReadOnly} onChange={e => saveInterventionEntry(s.name, { ...iLogEntry, notes: e.target.value })} placeholder={"Notes about " + s.name + "…"} style={{ width: "100%", border: "1px solid #e9d5ff", borderRadius: 5, padding: "0.35rem 0.5rem", fontSize: "0.98rem", fontFamily: "inherit", resize: "vertical", minHeight: 60, marginTop: "0.4rem", background: isWorkspaceReadOnly ? "#f8fafc" : "white" }} />
                             </div>
                           )}
                           </div>
@@ -5599,13 +5606,25 @@ function App() {
       {(view === "workspace" || isSnapshot) && (
         <React.Fragment>
 
+      {/* ── Read-only banner (shared team, view-only access) ── */}
+      {isWorkspaceReadOnly && (
+        <div className="no-print" style={{ background: "#faf5ff", borderBottom: "1px solid #ddd6fe", padding: "0.55rem 1.5rem", display: "flex", alignItems: "center", gap: "0.5rem", flexShrink: 0 }}>
+          <span style={{ fontSize: "0.86rem", color: "#6d28d9", fontWeight: 600 }}>
+            👁 View only — shared by {activeTeam?.sharedByEmail || "the team owner"}. You can view data, reports, and facilitation notes, but can't upload, edit settings, or make changes.
+          </span>
+        </div>
+      )}
+
       {/* ── Settings Panel ── */}
 
 
       {/* Tabs */}
       <div className="no-print" style={{ background: "white", borderBottom: "2px solid #e2e8f0", flexShrink: 0 }}>
         <div style={{ maxWidth: 1100, margin: "0 auto", display: "flex", padding: "0 1.5rem" }}>
-        {[["settings","⚙ Settings"],["upload","Upload"],["subgroups","Subgroups"],["data","Data"], ...(itemReport ? [["items","Item Analysis"]] : []), ["analysis","Report"]].map(([key, label]) => (
+        {(isWorkspaceReadOnly
+            ? [["data","Data"], ...(itemReport ? [["items","Item Analysis"]] : []), ["analysis","Report"]]
+            : [["settings","⚙ Settings"],["upload","Upload"],["subgroups","Subgroups"],["data","Data"], ...(itemReport ? [["items","Item Analysis"]] : []), ["analysis","Report"]]
+          ).map(([key, label]) => (
           <button key={key} onClick={() => { setActiveTab(key); if (key === "subgroups" && sections.length !== 0) openSgEditor(); }}
             style={{ background: "none", border: "none", borderBottom: activeTab === key ? "2px solid #0f766e" : "2px solid transparent", marginBottom: -2, color: activeTab === key ? "#0f766e" : "#64748b", fontFamily: "inherit", fontWeight: 700, fontSize: "0.94rem", padding: "0.75rem 1.1rem", cursor: "pointer", transition: "all 0.15s", display: "flex", alignItems: "center", gap: "0.35rem" }}>
             {key === "upload" && <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 1v9M5 4l3-3 3 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/><path d="M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>}
@@ -6824,6 +6843,7 @@ function App() {
 
         {activeTab === "data" && sections.length > 0 && (
           <div>
+            {!isWorkspaceReadOnly && (
             <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "1.25rem" }}>
               <div onClick={() => document.getElementById("fileIn2").click()}
                 style={{ border: "2px dashed #99f6e4", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", background: "white", color: "#0f766e", gap: "0.4rem", padding: "0.6rem 1.1rem", fontSize: "0.94rem", fontWeight: 600 }}>
@@ -6833,13 +6853,16 @@ function App() {
               </div>
               <span style={{ fontSize: "0.86rem", color: "#64748b" }}>{sections.filter(s => !s._itemOnly).length} section{sections.filter(s => !s._itemOnly).length !== 1 ? "s" : ""} loaded</span>
             </div>
+            )}
 
+            {!isWorkspaceReadOnly && (
             <div style={{ textAlign: "center", marginBottom: "1.25rem" }}>
               <button onClick={generateReport}
                 style={{ background: "linear-gradient(135deg, #0f766e, #0d9488)", color: "white", border: "none", borderRadius: 10, padding: "0.85rem 2.5rem", fontSize: "1.32rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit", boxShadow: "0 4px 18px rgba(15,118,110,0.35)" }}>
                 📊 Generate Report — {currentAssessmentName}
               </button>
             </div>
+            )}
 
             {/* Student scores preview table — uses built-in pct */}
             {(() => {
@@ -7703,6 +7726,7 @@ function App() {
                     </p>
                     <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
                     {/* Save to Drive button */}
+                    {!isWorkspaceReadOnly && (
                     <button
                       onClick={driveSaveAnalytics}
                       disabled={driveStatus === "saving"}
@@ -7710,6 +7734,7 @@ function App() {
                       <svg width="15" height="15" viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}><path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="rgba(255,255,255,0.9)"/><path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0 -1.2 4.5h27.5z" fill="rgba(255,255,255,0.9)"/><path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="rgba(255,255,255,0.9)"/><path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="rgba(255,255,255,0.7)"/><path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="rgba(255,255,255,0.9)"/><path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 27h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="rgba(255,255,255,0.9)"/></svg>
                       {driveStatus === "saving" ? "Saving…" : driveStatus === "saved" ? "✓ Saved to Drive" : "Save to Google Drive"}
                     </button>
+                    )}
 
                     {/* Download printable report */}
                     <button onClick={downloadSnapshot}
@@ -7719,10 +7744,12 @@ function App() {
                     </button>
 
                     {/* Prepare Facilitation */}
+                    {!isWorkspaceReadOnly && (
                     <button onClick={openFacilPrep}
                       style={{ display: "flex", alignItems: "center", gap: "0.4rem", background: "white", color: "#7c3aed", border: "1px solid #7c3aed", borderRadius: 8, padding: "0.5rem 1.2rem", fontSize: "0.98rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
                       🎯 Prepare Facilitation
                     </button>
+                    )}
                     </div>
 
                     <div style={{ marginTop: "0.5rem", fontSize: "0.83rem", color: "#94a3b8" }}>
