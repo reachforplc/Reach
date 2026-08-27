@@ -1804,6 +1804,13 @@ function App() {
   }, []);
   const [editingTeamName, setEditingTeamName] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
+  const [shareModalTeam, setShareModalTeam] = useState(null);
+  const [sharePermissions, setSharePermissions] = useState([]);
+  const [sharePermsLoading, setSharePermsLoading] = useState(false);
+  const [shareEmail, setShareEmail] = useState("");
+  const [shareRole, setShareRole] = useState("reader");
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState("");
 
   useEffect(() => {
     if (!sections.length || !report) return;
@@ -1822,7 +1829,7 @@ function App() {
   const DRIVE_SCOPE    = "https://www.googleapis.com/auth/drive.file";
   // Browser key from Google Cloud Console, restricted to the Picker API + this domain.
   // Required for "Connect a shared team" (Google Picker). Leave blank to disable that feature.
-  const PICKER_API_KEY = "";
+  const PICKER_API_KEY = "AIzaSyCCHsujwzBRFaFBAaqdgNAjVXCTM915SuA";
   const [pickerReady, setPickerReady] = useState(false);
 
   useEffect(() => {
@@ -3565,6 +3572,97 @@ function App() {
     picker.setVisible(true);
   });
 
+  // ── Sharing (owner side) ──────────────────────────────────────────────
+  const driveListTeamPermissions = async (team, token) => {
+    const folderId = await ensureTeamFolder(token, team.id, team.name, team.folderId);
+    const resp = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${folderId}/permissions?fields=permissions(id,emailAddress,role,type)`,
+      { headers: { Authorization: "Bearer " + token } }
+    );
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} listing permissions`);
+    const data = await resp.json();
+    return (data.permissions || []).filter(p => p.type === "user");
+  };
+
+  const openShareModal = (team) => {
+    setShareModalTeam(team);
+    setShareEmail(""); setShareRole("reader"); setShareError(""); setSharePermissions([]);
+    setSharePermsLoading(true);
+    withToken(async token => {
+      try {
+        const perms = await driveListTeamPermissions(team, token);
+        setSharePermissions(perms);
+      } catch (e) {
+        setShareError("Couldn't load current sharing: " + e.message);
+      } finally {
+        setSharePermsLoading(false);
+      }
+    });
+  };
+
+  const closeShareModal = () => { setShareModalTeam(null); setSharePermissions([]); setShareError(""); };
+
+  const shareTeamWithEmail = () => {
+    const email = shareEmail.trim();
+    if (!email || !email.includes("@")) { setShareError("Enter a valid email address."); return; }
+    if (sharePermissions.some(p => p.emailAddress?.toLowerCase() === email.toLowerCase())) {
+      setShareError(`${email} already has access.`);
+      return;
+    }
+    setShareBusy(true); setShareError("");
+    withToken(async token => {
+      try {
+        const folderId = await ensureTeamFolder(token, shareModalTeam.id, shareModalTeam.name, shareModalTeam.folderId);
+        const resp = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${folderId}/permissions?sendNotificationEmail=true&fields=id,emailAddress,role,type`,
+          {
+            method: "POST",
+            headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+            body: JSON.stringify({ role: shareRole, type: "user", emailAddress: email })
+          }
+        );
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err?.error?.message || `HTTP ${resp.status}`);
+        }
+        const perm = await resp.json();
+        setSharePermissions(prev => [...prev, perm]);
+        setShareEmail("");
+        const updated = teams.map(t => t.id === shareModalTeam.id
+          ? { ...t, sharedWith: [...(t.sharedWith || []), { email, role: shareRole }] }
+          : t);
+        setTeams(updated);
+        driveSaveTeams(updated);
+      } catch (e) {
+        setShareError("Couldn't share: " + e.message);
+      } finally {
+        setShareBusy(false);
+      }
+    });
+  };
+
+  const revokeTeamPermission = (permission) => {
+    if (!window.confirm(`Remove ${permission.emailAddress}'s access to "${shareModalTeam.name}"?`)) return;
+    withToken(async token => {
+      try {
+        const folderId = await ensureTeamFolder(token, shareModalTeam.id, shareModalTeam.name, shareModalTeam.folderId);
+        const resp = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${folderId}/permissions/${permission.id}`,
+          { method: "DELETE", headers: { Authorization: "Bearer " + token } }
+        );
+        if (!resp.ok && resp.status !== 404) throw new Error(`HTTP ${resp.status}`);
+        setSharePermissions(prev => prev.filter(p => p.id !== permission.id));
+        const updated = teams.map(t => t.id === shareModalTeam.id
+          ? { ...t, sharedWith: (t.sharedWith || []).filter(s => s.email?.toLowerCase() !== permission.emailAddress?.toLowerCase()) }
+          : t);
+        setTeams(updated);
+        driveSaveTeams(updated);
+      } catch (e) {
+        setShareError("Couldn't remove access: " + e.message);
+      }
+    });
+  };
+
   const connectSharedTeam = () => {
     if (!PICKER_API_KEY) {
       alert("Connecting shared teams isn't set up yet in this copy of Reach — it needs a Google Picker API key configured by whoever manages Reach for your school.");
@@ -3779,6 +3877,12 @@ function App() {
                           <button onClick={() => openTeamSettings(team)}
                             style={{ flex: "1 1 40%", background: "white", color: "#64748b", border: "1px solid #e2e8f0", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
                             ⚙ Settings
+                          </button>
+                        )}
+                        {!shared && (
+                          <button onClick={() => openShareModal(team)}
+                            style={{ flex: "1 1 40%", background: "white", color: "#7c3aed", border: "1px solid #ddd6fe", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                            👥 Share{team.sharedWith && team.sharedWith.length > 0 ? ` (${team.sharedWith.length})` : ""}
                           </button>
                         )}
                       </div>
@@ -4754,6 +4858,79 @@ function App() {
       )}
 
 
+
+      {/* ── SHARE TEAM MODAL ── */}
+      {shareModalTeam && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(15,23,42,0.6)", display: "flex", alignItems: "center", justifyContent: "center", padding: "1.5rem" }}
+          onClick={e => { if (e.target === e.currentTarget) closeShareModal(); }}>
+          <div style={{ background: "white", borderRadius: 14, width: "100%", maxWidth: 480, maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(15,23,42,0.3)" }}>
+            <div style={{ background: "linear-gradient(135deg, #6d28d9, #7c3aed)", padding: "1.1rem 1.5rem", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexShrink: 0 }}>
+              <div>
+                <div style={{ fontSize: "0.78rem", color: "#ddd6fe", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "0.2rem" }}>Share Team</div>
+                <div style={{ color: "white", fontWeight: 700, fontSize: "1.32rem" }}>{shareModalTeam.name}</div>
+              </div>
+              <button onClick={closeShareModal}
+                style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "white", borderRadius: 7, padding: "0.35rem 0.75rem", fontSize: "1.06rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                ✕
+              </button>
+            </div>
+
+            <div style={{ padding: "1.5rem", overflowY: "auto" }}>
+              <div style={{ fontSize: "0.86rem", color: "#64748b", marginBottom: "1rem" }}>
+                Give a colleague access to this team's data. They'll get an email from Google, and can connect to it from their own Reach account under "Shared with Me."
+              </div>
+
+              <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.5rem" }}>
+                <input
+                  type="email"
+                  value={shareEmail}
+                  onChange={e => setShareEmail(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && !shareBusy) shareTeamWithEmail(); }}
+                  placeholder="colleague@school.org"
+                  style={{ flex: 1, border: "1px solid #e2e8f0", borderRadius: 7, padding: "0.5rem 0.7rem", fontSize: "0.94rem", fontFamily: "inherit", outline: "none", color: "#0f172a" }}
+                />
+                <select value={shareRole} onChange={e => setShareRole(e.target.value)}
+                  style={{ border: "1px solid #e2e8f0", borderRadius: 7, padding: "0.5rem 0.5rem", fontSize: "0.86rem", fontFamily: "inherit", color: "#0f172a", background: "white" }}>
+                  <option value="reader">Can view</option>
+                  <option value="writer">Can edit</option>
+                </select>
+              </div>
+              {shareError && <div style={{ color: "#dc2626", fontSize: "0.82rem", marginBottom: "0.5rem" }}>{shareError}</div>}
+              <button onClick={shareTeamWithEmail} disabled={shareBusy || !shareEmail.trim()}
+                style={{ width: "100%", background: shareBusy || !shareEmail.trim() ? "#e2e8f0" : "linear-gradient(135deg, #6d28d9, #7c3aed)", color: shareBusy || !shareEmail.trim() ? "#94a3b8" : "white", border: "none", borderRadius: 7, padding: "0.55rem", fontSize: "0.94rem", fontWeight: 700, cursor: shareBusy || !shareEmail.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", marginBottom: "1.25rem" }}>
+                {shareBusy ? "Sharing…" : "Share"}
+              </button>
+
+              <div style={{ fontSize: "0.78rem", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "0.5rem" }}>
+                Who has access
+              </div>
+              {sharePermsLoading ? (
+                <div style={{ fontSize: "0.86rem", color: "#94a3b8" }}>Loading…</div>
+              ) : sharePermissions.length === 0 ? (
+                <div style={{ fontSize: "0.86rem", color: "#94a3b8", fontStyle: "italic" }}>Only you have access right now.</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                  {sharePermissions.map(p => (
+                    <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.5rem 0.7rem", background: "#faf5ff", border: "1px solid #ede9fe", borderRadius: 8 }}>
+                      <div>
+                        <div style={{ fontSize: "0.88rem", fontWeight: 600, color: "#0f172a" }}>{p.emailAddress}</div>
+                        <div style={{ fontSize: "0.76rem", color: "#7c3aed" }}>{p.role === "writer" ? "Can edit" : "Can view"}</div>
+                      </div>
+                      <button onClick={() => revokeTeamPermission(p)}
+                        title="Remove access"
+                        style={{ background: "none", border: "none", color: "#cbd5e1", cursor: "pointer", fontSize: "1.03rem", padding: "0.1rem 0.3rem", lineHeight: 1 }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#dc2626"}
+                        onMouseLeave={e => e.currentTarget.style.color = "#cbd5e1"}>
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── INTERVENTION LOG VIEWER ── */}
       {interventionLogOpen && (
