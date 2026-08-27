@@ -3600,7 +3600,9 @@ function App() {
   React.useEffect(() => {
     if (!teamsLoaded || !driveUser?.accessToken || !teams.length) return;
     // Background-populate analyticsFiles on each team card
-    // so the Continue → picker has a file list before the workspace is opened
+    // so the Continue → picker has a file list before the workspace is opened.
+    // Depends on the set of team IDs (not just teamsLoaded) so newly-discovered
+    // shared teams — which arrive a moment after sign-in — get populated too.
     withToken(async (token) => {
       const updated = await Promise.all(teams.map(async (team) => {
         try {
@@ -3618,7 +3620,7 @@ function App() {
       }));
       setTeams(updated);
     });
-  }, [teamsLoaded, driveUser?.accessToken]);
+  }, [teamsLoaded, driveUser?.accessToken, teams.map(t => t.id).join(",")]);
 
 
   const renameTeam = (team, newName) => {
