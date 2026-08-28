@@ -1776,7 +1776,6 @@ function App() {
   const [compareLoading, setCompareLoading]     = useState(false);
   const [compareMode, setCompareMode]           = useState("distribution"); // "distribution" | "growth"
   const [compareGlobalThreshold, setCompareGlobalThreshold] = useState(null); // session-only override applied to all units, or null to use each unit's own
-  const [compareExpandedStats, setCompareExpandedStats] = useState({}); // { [unitId]: bool } — full-stats panel toggle
 
   const openCompare = (team) => {
     setCompareTeam(team);
@@ -2997,23 +2996,44 @@ function App() {
     return secs;
   };
 
-  const openCompareFacilMode = () => {
+  const openCompareFacilPrep = () => {
     if (!compareData.length || !compareTeam) return;
-    const riskRows = buildCompareRiskRows(compareData, compareGlobalThreshold, teamSettings.riskSettings);
-    setCompareFacilitationDraft({
-      teamId: compareTeam.id,
-      teamName: compareTeam.name,
-      unitNames: compareData.map(u => `${u.order}. ${u.name}`),
-      createdAt: new Date().toISOString().slice(0, 10),
-      sections: DEFAULT_COMPARE_FACIL_SECTIONS(compareData, riskRows),
-      completedAt: null,
-    });
+    if (!compareFacilitationDraft || compareFacilitationDraft.teamId !== compareTeam.id) {
+      const riskRows = buildCompareRiskRows(compareData, compareGlobalThreshold, teamSettings.riskSettings);
+      setCompareFacilitationDraft({
+        teamId: compareTeam.id,
+        teamName: compareTeam.name,
+        unitNames: compareData.map(u => `${u.order}. ${u.name}`),
+        createdAt: new Date().toISOString().slice(0, 10),
+        timerEnabled: false,
+        totalMinutes: 50,
+        sections: DEFAULT_COMPARE_FACIL_SECTIONS(compareData, riskRows),
+        completedAt: null,
+      });
+    }
+    setCompareFacilPrepOpen(true);
+  };
+
+  const startCompareFacilMode = () => {
+    setCompareFacilPrepOpen(false);
     setCompareFacilSecIdx(0);
+    setCompareFacilElapsed(0);
+    clearInterval(compareFacilTimerRef.current);
+    if (compareFacilitationDraft?.timerEnabled) {
+      compareFacilTimerRef.current = setInterval(() => setCompareFacilElapsed(e => e + 1), 1000);
+    }
     setCompareFacilMode(true);
+  };
+
+  const compareFacilGoToSection = (i) => {
+    setCompareFacilSecIdx(i);
+    setCompareFacilElapsed(0);
   };
 
   const closeCompareFacilMode = () => {
     setCompareFacilMode(false);
+    clearInterval(compareFacilTimerRef.current);
+    setCompareFacilElapsed(0);
   };
 
   const driveSaveTeams = async (updatedTeams) => {
@@ -3143,6 +3163,9 @@ function App() {
   const [compareFacilMode, setCompareFacilMode]                 = useState(false);
   const [compareFacilitationDraft, setCompareFacilitationDraft] = useState(null);
   const [compareFacilSecIdx, setCompareFacilSecIdx]             = useState(0);
+  const [compareFacilPrepOpen, setCompareFacilPrepOpen]         = useState(false);
+  const [compareFacilElapsed, setCompareFacilElapsed]           = useState(0);
+  const compareFacilTimerRef = useRef(null);
   const facilTimerRef = useRef(null);
   const [showArchived, setShowArchived] = useState(true);
 
@@ -5039,16 +5062,26 @@ function App() {
                 <div style={{ color: "#a78bfa", fontWeight: 700, fontSize: "1.06rem" }}>🎯 FACILITATION MODE — COMPARE</div>
                 <div style={{ color: "#c4b5fd", fontSize: "0.86rem" }}>{compareFacilitationDraft.teamName} · {compareData.length} assessments</div>
               </div>
-              <button onClick={closeCompareFacilMode}
-                style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", color: "#c4b5fd", borderRadius: 6, padding: "0.3rem 0.75rem", fontSize: "1.03rem", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
-                ✕ Exit
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                {compareFacilitationDraft.timerEnabled && (() => {
+                  const isOverTime = compareFacilElapsed > sec.suggestedMinutes * 60;
+                  return (
+                    <div style={{ background: isOverTime ? "rgba(220,38,38,0.2)" : "rgba(255,255,255,0.1)", borderRadius: 6, padding: "0.25rem 0.65rem", fontSize: "1.06rem", fontWeight: 700, color: isOverTime ? "#fca5a5" : "#c4b5fd", fontVariantNumeric: "tabular-nums" }}>
+                      ⏱ {formatTime(compareFacilElapsed)} / {sec.suggestedMinutes}:00
+                    </div>
+                  );
+                })()}
+                <button onClick={closeCompareFacilMode}
+                  style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", color: "#c4b5fd", borderRadius: 6, padding: "0.3rem 0.75rem", fontSize: "1.03rem", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                  ✕ Exit
+                </button>
+              </div>
             </div>
 
             {/* Section tabs */}
             <div style={{ display: "flex", background: "rgba(0,0,0,0.2)", flexShrink: 0 }}>
               {secs.map((s, i) => (
-                <button key={s.id} onClick={() => setCompareFacilSecIdx(i)}
+                <button key={s.id} onClick={() => compareFacilGoToSection(i)}
                   style={{ flex: 1, padding: "0.45rem 0.25rem", background: i === compareFacilSecIdx ? "rgba(139,92,246,0.4)" : "transparent", border: "none", borderBottom: i === compareFacilSecIdx ? "2px solid #a78bfa" : "2px solid transparent", color: i === compareFacilSecIdx ? "#e9d5ff" : "#6d6b8a", fontSize: "0.71rem", fontWeight: i === compareFacilSecIdx ? 700 : 500, cursor: "pointer", fontFamily: "inherit", textAlign: "center" }}>
                   {s.title}
                 </button>
@@ -5100,12 +5133,12 @@ function App() {
 
             {/* Bottom nav */}
             <div style={{ background: "rgba(0,0,0,0.3)", padding: "0.65rem 1.25rem", display: "flex", justifyContent: "space-between", flexShrink: 0, borderTop: "1px solid rgba(255,255,255,0.1)" }}>
-              <button onClick={() => setCompareFacilSecIdx(i => Math.max(0, i - 1))} disabled={compareFacilSecIdx === 0}
+              <button onClick={() => compareFacilGoToSection(Math.max(0, compareFacilSecIdx - 1))} disabled={compareFacilSecIdx === 0}
                 style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", color: compareFacilSecIdx === 0 ? "#4c4a6e" : "#c4b5fd", borderRadius: 6, padding: "0.4rem 1rem", fontSize: "0.94rem", fontWeight: 600, cursor: compareFacilSecIdx === 0 ? "default" : "pointer", fontFamily: "inherit" }}>
                 ← Back
               </button>
               {compareFacilSecIdx < secs.length - 1 ? (
-                <button onClick={() => setCompareFacilSecIdx(i => Math.min(secs.length - 1, i + 1))}
+                <button onClick={() => compareFacilGoToSection(Math.min(secs.length - 1, compareFacilSecIdx + 1))}
                   style={{ background: "linear-gradient(135deg,#7c3aed,#6d28d9)", border: "none", color: "white", borderRadius: 6, padding: "0.4rem 1.1rem", fontSize: "0.94rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
                   Next →
                 </button>
@@ -5314,6 +5347,96 @@ function App() {
               Save Draft
             </button>
             <button onClick={() => setFacilPrepOpen(false)}
+              style={{ background: "white", color: "#64748b", border: "1px solid #e2e8f0", borderRadius: 8, padding: "0.55rem 1rem", fontSize: "0.98rem", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── COMPARE FACILITATION PREP ── */}
+      {compareFacilPrepOpen && compareFacilitationDraft && (
+        <div style={{ position: "fixed", top: 0, right: 0, width: "min(520px, 100vw)", height: "100vh", background: "white", boxShadow: "-4px 0 24px rgba(15,23,42,0.15)", zIndex: 200, display: "flex", flexDirection: "column", fontFamily: "inherit" }}>
+          {/* Header */}
+          <div style={{ background: "linear-gradient(135deg, #4c1d95, #6d28d9)", padding: "1rem 1.25rem", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+            <div>
+              <div style={{ fontFamily: "'Lora', serif", fontWeight: 700, color: "white", fontSize: "1.32rem" }}>🎯 Facilitation Prep — Compare</div>
+              <div style={{ fontSize: "0.8rem", color: "#ddd6fe", marginTop: "0.15rem" }}>{compareFacilitationDraft.teamName} · {compareData.length} assessments</div>
+            </div>
+            <button onClick={() => setCompareFacilPrepOpen(false)}
+              style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "white", borderRadius: 6, padding: "0.3rem 0.65rem", fontSize: "1.06rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+              ✕ Close
+            </button>
+          </div>
+
+          {/* Scrollable body */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "1.25rem" }}>
+
+            {/* Timer settings */}
+            <div style={{ background: "#faf5ff", border: "1px solid #e9d5ff", borderRadius: 10, padding: "0.85rem 1rem", marginBottom: "1.25rem" }}>
+              <div style={{ fontWeight: 700, fontSize: "0.94rem", color: "#6d28d9", marginBottom: "0.6rem" }}>⏱ Timer Settings</div>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "1.06rem", color: "#475569", cursor: "pointer" }}>
+                  <input type="checkbox" checked={compareFacilitationDraft.timerEnabled}
+                    onChange={e => setCompareFacilitationDraft({ ...compareFacilitationDraft, timerEnabled: e.target.checked })}
+                    style={{ accentColor: "#7c3aed" }} />
+                  Show timer during facilitation
+                </label>
+                {compareFacilitationDraft.timerEnabled && (
+                  <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "1.06rem", color: "#475569" }}>
+                    Total meeting time:
+                    <input type="number" min={20} max={120} value={compareFacilitationDraft.totalMinutes}
+                      onChange={e => setCompareFacilitationDraft({ ...compareFacilitationDraft, totalMinutes: parseInt(e.target.value) || 50 })}
+                      style={{ width: 52, border: "1px solid #e2e8f0", borderRadius: 5, padding: "0.2rem 0.4rem", fontSize: "1.06rem", fontFamily: "inherit" }} />
+                    min
+                  </label>
+                )}
+              </div>
+            </div>
+
+            {/* Prompts per section */}
+            <div style={{ fontWeight: 700, fontSize: "0.94rem", color: "#0f172a", marginBottom: "0.75rem" }}>📝 Review & Edit Prompts</div>
+            {compareFacilitationDraft.sections.map((sec, secIdx) => (
+              <div key={sec.id} style={{ border: "1px solid #e9d5ff", borderRadius: 10, marginBottom: "1rem", overflow: "hidden" }}>
+                <div style={{ background: "#f5f3ff", padding: "0.65rem 0.9rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ fontWeight: 700, fontSize: "0.94rem", color: "#6d28d9" }}>{sec.title}</div>
+                  {compareFacilitationDraft.timerEnabled && (
+                    <div style={{ fontSize: "0.8rem", color: "#94a3b8" }}>~{sec.suggestedMinutes} min</div>
+                  )}
+                </div>
+                <div style={{ padding: "0.65rem 0.9rem", display: "flex", flexDirection: "column", gap: "0.65rem" }}>
+                  {(sec.id === "closing" ? [...sec.prompts.filter(p => p.level !== "planning"), ...sec.prompts.filter(p => p.level === "planning").slice(-1)] : sec.prompts.filter(p => p.level !== "planning")).map((prompt, pIdx) => (
+                    <div key={pIdx}>
+                      <div style={{ fontSize: "0.78rem", fontWeight: 700, color: prompt.level === "noticing" ? "#0369a1" : prompt.level === "interpreting" ? "#7c3aed" : "#15803d", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.25rem" }}>
+                        {prompt.level === "noticing" ? "Opening — Noticing" : prompt.level === "interpreting" ? "Deepening — Interpreting" : "Committing — Planning"}
+                      </div>
+                      <textarea
+                        value={prompt.question}
+                        onChange={e => {
+                          const updated = compareFacilitationDraft.sections.map((s, si) =>
+                            si !== secIdx ? s : { ...s, prompts: s.prompts.map((p, pi) =>
+                              pi !== pIdx ? p : { ...p, question: e.target.value }
+                            )}
+                          );
+                          setCompareFacilitationDraft({ ...compareFacilitationDraft, sections: updated });
+                        }}
+                        rows={2}
+                        style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 6, padding: "0.4rem 0.5rem", fontSize: "1.03rem", fontFamily: "inherit", lineHeight: 1.5, resize: "vertical", color: "#0f172a" }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Footer */}
+          <div style={{ padding: "1rem 1.25rem", borderTop: "1px solid #e2e8f0", display: "flex", gap: "0.75rem", flexShrink: 0 }}>
+            <button onClick={startCompareFacilMode}
+              style={{ flex: 1, background: "linear-gradient(135deg, #6d28d9, #7c3aed)", color: "white", border: "none", borderRadius: 8, padding: "0.55rem 1rem", fontSize: "0.98rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+              ▶ Start Facilitation
+            </button>
+            <button onClick={() => setCompareFacilPrepOpen(false)}
               style={{ background: "white", color: "#64748b", border: "1px solid #e2e8f0", borderRadius: 8, padding: "0.55rem 1rem", fontSize: "0.98rem", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
               Cancel
             </button>
@@ -5882,7 +6005,7 @@ function App() {
                     style={{ background: "none", border: "none", color: "#0f766e", fontSize: "0.84rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
                     ← Change selection
                   </button>
-                  <button onClick={openCompareFacilMode}
+                  <button onClick={openCompareFacilPrep}
                     style={{ background: "linear-gradient(135deg,#6d28d9,#7c3aed)", color: "white", border: "none", borderRadius: 7, padding: "0.4rem 0.85rem", fontSize: "0.84rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
                     🎯 Start Facilitation
                   </button>
@@ -5913,76 +6036,92 @@ function App() {
                   )}
                 </div>
 
-                {/* Per-unit summary cards */}
-                <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(compareData.length, 4)}, 1fr)`, gap: "0.75rem", marginBottom: "0.75rem" }}>
+                {/* Per-unit report — same visual components as the single-assessment Analysis tab: stat pills, Proficiency Rate card, and the vertical Grade/Score Distribution chart */}
+                <div style={{ marginBottom: "1.5rem" }}>
                   {compareData.map(unit => {
                     const eff = compareGlobalThreshold ?? unit.threshold;
                     const students = unit.growthData?.enriched || [];
                     const pct = students.length ? Math.round(students.filter(s => s.pct >= eff).length / students.length * 100) : 0;
                     const stats = unit.report?.stats;
+                    const dist = unit.report?.dist;
+                    const scoreDist = unit.report?.scoreDist;
+                    const sgStats = unit.growthData?.subgroupStats || {};
+                    const notProficient = students.length - students.filter(s => s.pct >= eff).length;
+
                     return (
-                      <div key={unit.id} style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 10, padding: "0.8rem" }}>
-                        <div style={{ fontSize: "0.82rem", fontWeight: 700, color: "#0f172a", marginBottom: "0.3rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{unit.order}. {unit.name}</div>
-                        <div style={{ fontSize: "1.4rem", fontWeight: 800, color: pct >= 70 ? "#15803d" : "#dc2626" }}>{pct}%</div>
-                        <div style={{ fontSize: "0.74rem", color: "#94a3b8", marginBottom: stats ? "0.4rem" : 0 }}>proficient at ≥{eff}% · {students.length} students</div>
+                      <div key={unit.id} style={{ marginBottom: "1.5rem" }}>
+                        <h3 style={{ color: "#0f172a", fontSize: "1.06rem", fontWeight: 700, margin: "0 0 0.6rem", fontFamily: "'Lora', serif" }}>
+                          {unit.order}. {unit.name}
+                        </h3>
+
                         {stats && (
-                          <div style={{ display: "flex", gap: "0.5rem", fontSize: "0.72rem", color: "#64748b" }}>
-                            <span>Mean <strong style={{ color: "#0f766e" }}>{stats.mean}</strong></span>
-                            <span>Median <strong style={{ color: "#0f766e" }}>{stats.median}</strong></span>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "0.5rem", marginBottom: "0.75rem" }}>
+                            {[
+                              ["Mean", stats.mean, pct >= eff ? "#15803d" : "#dc2626"],
+                              ["Median", stats.median, "#0f766e"],
+                              ["High", stats.high, "#15803d"],
+                              ["Low", stats.low, "#dc2626"],
+                              ["Std Dev", stats.stdDev + "%", "#64748b"],
+                            ].map(([lbl, val, color]) => (
+                              <div key={lbl} style={{ background: "white", borderRadius: 10, padding: "0.6rem 0.4rem", textAlign: "center", boxShadow: "0 1px 4px rgba(15,23,42,0.07)" }}>
+                                <div style={{ fontWeight: 800, color, fontSize: "1.06rem" }}>{val}</div>
+                                <div style={{ fontSize: "0.68rem", color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em", marginTop: "0.1rem" }}>{lbl}</div>
+                              </div>
+                            ))}
                           </div>
                         )}
-                      </div>
-                    );
-                  })}
-                </div>
 
-                {/* Full stats — reuses the same stats each individual report already computed */}
-                <div style={{ marginBottom: "1.5rem" }}>
-                  {compareData.map(unit => {
-                    const expanded = !!compareExpandedStats[unit.id];
-                    const stats = unit.report?.stats;
-                    const dist = unit.report?.dist;
-                    const sgStats = unit.growthData?.subgroupStats || {};
-                    return (
-                      <div key={unit.id} style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 8, marginBottom: "0.4rem", overflow: "hidden" }}>
-                        <button onClick={() => setCompareExpandedStats(prev => ({ ...prev, [unit.id]: !expanded }))}
-                          style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", background: "none", border: "none", padding: "0.55rem 0.8rem", cursor: "pointer", fontFamily: "inherit" }}>
-                          <span style={{ fontSize: "0.86rem", fontWeight: 700, color: "#0f172a" }}>{unit.order}. {unit.name} — full stats</span>
-                          <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>{expanded ? "▲" : "▼"}</span>
-                        </button>
-                        {expanded && (
-                          <div style={{ borderTop: "1px solid #f1f5f9", padding: "0.75rem 0.9rem" }}>
-                            {stats && (
-                              <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
-                                {[["Mean",stats.mean],["Median",stats.median],["High",stats.high],["Low",stats.low],["Std Dev",stats.stdDev]].map(([l,v]) => (
-                                  <div key={l} style={{ background: "#f8fafc", borderRadius: 7, padding: "0.4rem 0.7rem", textAlign: "center", minWidth: 64 }}>
-                                    <div style={{ fontSize: "1rem", fontWeight: 700, color: "#0f766e" }}>{v}</div>
-                                    <div style={{ fontSize: "0.68rem", color: "#94a3b8" }}>{l}</div>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            {dist && (
-                              <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", marginBottom: Object.keys(sgStats).length ? "0.75rem" : 0 }}>
-                                {["A","B","C","D","F"].map(g => (
-                                  <div key={g} style={{ background: "#f8fafc", borderRadius: 6, padding: "0.25rem 0.5rem", fontSize: "0.78rem" }}>
-                                    <strong>{g}</strong>: {dist[g] || 0}
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            {Object.keys(sgStats).length > 0 && (
-                              <div>
-                                <div style={{ fontSize: "0.7rem", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.3rem" }}>Subgroups</div>
-                                <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
-                                  {Object.values(sgStats).map(sg => (
-                                    <div key={sg.name} style={{ background: "#f8fafc", borderRadius: 6, padding: "0.25rem 0.5rem", fontSize: "0.78rem" }}>
-                                      <strong>{sg.name}</strong>: {sg.avg}% avg ({sg.count} students)
+                        <div style={{ background: "white", borderRadius: 10, padding: "0.85rem 1rem", boxShadow: "0 1px 4px rgba(15,23,42,0.07)", marginBottom: "0.75rem" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.4rem" }}>
+                            <span style={{ fontWeight: 700, color: "#0f172a", fontSize: "0.94rem" }}>Proficiency Rate (≥{eff}%)</span>
+                            <span style={{ fontWeight: 800, fontSize: "1.16rem", color: pct >= eff ? "#15803d" : "#dc2626" }}>{pct}%</span>
+                          </div>
+                          <div style={{ height: 9, background: "#e2e8f0", borderRadius: 5, overflow: "hidden", marginBottom: "0.35rem" }}>
+                            <div style={{ width: pct + "%", height: "100%", background: pct >= 70 ? "#15803d" : pct >= 50 ? "#d97706" : "#dc2626", borderRadius: 5, transition: "width 0.5s" }} />
+                          </div>
+                          <div style={{ fontSize: "0.78rem", color: "#64748b" }}>{students.length - notProficient} proficient · {notProficient} not proficient · {students.length} total</div>
+                        </div>
+
+                        <div style={{ background: "white", borderRadius: 10, padding: "0.85rem 1rem", boxShadow: "0 1px 4px rgba(15,23,42,0.07)", marginBottom: Object.keys(sgStats).length ? "0.75rem" : 0 }}>
+                          <div style={{ fontWeight: 700, color: "#0f172a", fontSize: "0.9rem", marginBottom: "0.6rem" }}>
+                            {scoreDist ? (scoreDist.type === "proficiency" ? "Proficiency Distribution" : scoreDist.type === "points" ? "Score Distribution (out of " + scoreDist.scale + ")" : "Grade Distribution") : "Grade Distribution"}
+                          </div>
+                          {(() => {
+                            const sdBuckets = scoreDist ? scoreDist.buckets : null;
+                            const bands = sdBuckets
+                              ? sdBuckets.map(b => [b.label, b.color, b.bg])
+                              : [["F","#dc2626","#fee2e2"],["D","#ea580c","#fff7ed"],["C","#d97706","#fef9c3"],["B","#65a30d","#f0fdf4"],["A","#15803d","#dcfce7"]];
+                            const counts = sdBuckets
+                              ? sdBuckets.map(b => b.count)
+                              : (dist ? [dist.F, dist.D, dist.C, dist.B, dist.A] : [0,0,0,0,0]);
+                            return (
+                              <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end" }}>
+                                {bands.map(([g, color, bg], bi) => {
+                                  const count = counts[bi] || 0;
+                                  const gPct = students.length > 0 ? Math.round((count / students.length) * 100) : 0;
+                                  const barH = Math.max(gPct * 1.1, count > 0 ? 4 : 0);
+                                  return (
+                                    <div key={g} style={{ flex: 1, minWidth: g.length > 6 ? 50 : g.length > 2 ? 38 : 26, display: "flex", flexDirection: "column", alignItems: "center", gap: "0.15rem" }}>
+                                      <div style={{ fontSize: "0.68rem", fontWeight: 700, color }}>{count > 0 ? gPct + "%" : ""}</div>
+                                      <div style={{ width: "100%", height: barH, background: color, borderRadius: "3px 3px 0 0", minHeight: count > 0 ? 4 : 0 }} />
+                                      <div style={{ width: "100%", height: 2, background: "#e2e8f0" }} />
+                                      <div style={{ fontWeight: 800, color, fontSize: g.length > 8 ? "0.44rem" : g.length > 4 ? "0.5rem" : "0.74rem", lineHeight: 1.2, textAlign: "center", wordBreak: "break-word", maxWidth: "100%" }}>{g}</div>
+                                      <div style={{ fontWeight: 700, color, fontSize: "0.72rem" }}>{count}</div>
                                     </div>
-                                  ))}
-                                </div>
+                                  );
+                                })}
                               </div>
-                            )}
+                            );
+                          })()}
+                        </div>
+
+                        {Object.keys(sgStats).length > 0 && (
+                          <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
+                            {Object.values(sgStats).map(sg => (
+                              <div key={sg.name} style={{ background: sg.gap < -10 ? "#fee2e2" : "#f0fdf4", color: sg.gap < -10 ? "#dc2626" : "#15803d", borderRadius: 6, padding: "0.25rem 0.55rem", fontSize: "0.78rem", fontWeight: 700 }}>
+                                {sg.name}: {sg.avg}% ({sg.gap >= 0 ? "+" : ""}{sg.gap} vs class)
+                              </div>
+                            ))}
                           </div>
                         )}
                       </div>
@@ -6018,27 +6157,34 @@ function App() {
                     RECOVERING: teamSettings.riskSettings.recoveringLabel,
                   };
                   return (
-                    <div style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 10, overflow: "hidden", marginBottom: "1.5rem" }}>
-                      <div style={{ padding: "0.6rem 0.9rem", borderBottom: "1px solid #f1f5f9", fontSize: "0.86rem", fontWeight: 700, color: "#0f172a" }}>
-                        Risk Tracking across {compareData.length} assessments — {riskRows.length} flagged
+                    <div style={{ marginBottom: "1.5rem" }}>
+                      <h3 style={{ color: "#0f172a", fontSize: "1.06rem", fontWeight: 700, margin: "0 0 0.6rem", fontFamily: "'Lora', serif" }}>📈 Risk Tracking — {riskRows.length} flagged</h3>
+                      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "0.6rem", fontSize: "0.83rem" }}>
+                        {[["PERSISTENTLY_AT_RISK", teamSettings.riskSettings.level2Color],["AT_RISK", teamSettings.riskSettings.level1Color],["RECOVERING", teamSettings.riskSettings.recoveringColor]].map(([k,c]) => (
+                          <span key={k} style={{ background: c + "22", color: c, borderRadius: 4, padding: "0.15rem 0.5rem", fontWeight: 700 }}>{riskLabels[k]}</span>
+                        ))}
                       </div>
-                      {riskRows.map((r, i) => (
-                        <div key={i} style={{ padding: "0.5rem 0.9rem", borderBottom: "1px solid #f8fafc", display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap" }}>
-                          <div style={{ minWidth: 120 }}>
-                            <div style={{ fontWeight: 600, fontSize: "0.9rem", color: "#0f172a" }}>{r.name}</div>
-                            {r.subgroups.length > 0 && <div style={{ fontSize: "0.7rem", color: "#94a3b8" }}>{r.subgroups.join(", ")}</div>}
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                        {riskRows.map((r, i) => (
+                          <div key={i} style={{ border: `1px solid ${riskColors[r.riskStatus]}66`, borderLeft: `3px solid ${riskColors[r.riskStatus]}`, borderRadius: 7, padding: "0.55rem 0.85rem", background: riskColors[r.riskStatus] + "15", display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+                            <div style={{ minWidth: 120 }}>
+                              <div style={{ fontWeight: 600, fontSize: "0.98rem", color: "#0f172a" }}>{r.name}</div>
+                              {r.subgroups.length > 0 && <div style={{ fontSize: "0.75rem", color: "#64748b" }}>{r.subgroups.join(", ")}</div>}
+                            </div>
+                            <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", flex: 1 }}>
+                              {r.scores.map((pct, si) => (
+                                <div key={si} style={{ display: "flex", flexDirection: "column", alignItems: "center", background: pct >= r.thresholds[si] ? "#dcfce7" : "#fee2e2", borderRadius: 5, padding: "0.2rem 0.4rem", minWidth: 52 }}>
+                                  <span style={{ fontSize: "0.62rem", color: pct >= r.thresholds[si] ? "#15803d" : "#dc2626", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 130 }}>{r.unitNames[si]}</span>
+                                  <span style={{ fontSize: "0.78rem", color: pct >= r.thresholds[si] ? "#15803d" : "#dc2626", fontWeight: 700 }}>{pct}%</span>
+                                </div>
+                              ))}
+                            </div>
+                            <span style={{ background: riskColors[r.riskStatus] + "22", color: riskColors[r.riskStatus], borderRadius: 20, padding: "0.15rem 0.55rem", fontSize: "0.76rem", fontWeight: 700, whiteSpace: "nowrap" }}>
+                              {riskLabels[r.riskStatus]}
+                            </span>
                           </div>
-                          <div style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap", flex: 1 }}>
-                            {r.scores.map((pct, si) => (
-                              <span key={si} style={{ background: pct >= r.thresholds[si] ? "#dcfce7" : "#fee2e2", color: pct >= r.thresholds[si] ? "#15803d" : "#dc2626", borderRadius: 5, padding: "0.1rem 0.4rem", fontSize: "0.74rem", fontWeight: 700 }}
-                                title={r.unitNames[si]}>{pct}%</span>
-                            ))}
-                          </div>
-                          <span style={{ background: riskColors[r.riskStatus] + "22", color: riskColors[r.riskStatus], borderRadius: 20, padding: "0.15rem 0.55rem", fontSize: "0.76rem", fontWeight: 700, whiteSpace: "nowrap" }}>
-                            {riskLabels[r.riskStatus]}
-                          </span>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
                   );
                 })()}
