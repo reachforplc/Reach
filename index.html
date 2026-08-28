@@ -3598,17 +3598,6 @@ function App() {
     } catch(e) { alert("Download failed: " + e.message); }
   };
 
-  const openTeamContinue = (team, file) => {
-    const fileToLoad = file || team.lastAnalyticsFile;
-    setExpandedTeamId(null);
-    openTeam(team);
-    if (fileToLoad) {
-      setPendingAnalyticsLoad(fileToLoad);
-    } else {
-      setTimeout(() => setActiveTab("upload"), 100);
-    }
-  };
-
   const openTeamChoose = (team) => {
     openTeam(team);
     setShowOlderAnalytics(true);
@@ -3933,16 +3922,10 @@ function App() {
                         )}
                         {editable ? (
                           team.analyticsFiles && team.analyticsFiles.length > 0 ? (
-                            <div data-dropdown style={{ position:"relative", flex:"1 1 40%" }}>
-                              <button data-dd-toggle onClick={() => setExpandedTeamId(expandedTeamId === team.id ? null : team.id)}
-                                style={{ width:"100%", background:"white", color:"#0f766e", border:"1px solid #99f6e4", borderRadius:7, padding:"0.4rem 0.5rem", fontSize:"0.8rem", fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
-                                {expandedTeamId === team.id ? "▲ Continue" : "▼ Continue"}
-                              </button>
-                              <button onClick={() => openTeam(team)}
-                                style={{ flex: "1 1 40%", background: "white", color: "#64748b", border: "1px solid #e2e8f0", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
-                                ＋ New
-                              </button>
-                            </div>
+                            <button onClick={() => openTeam(team)}
+                              style={{ flex: "1 1 40%", background: "white", color: "#64748b", border: "1px solid #e2e8f0", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                              ＋ New
+                            </button>
                           ) : (
                             <button onClick={() => openTeam(team)}
                               style={{ flex: "1 1 40%", background: "white", color: "#7c3aed", border: "1px solid #ddd6fe", borderRadius: 7, padding: "0.4rem 0.5rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
@@ -3955,36 +3938,6 @@ function App() {
                             View →
                           </button>
                         ) : null}
-                        {expandedTeamId === team.id && editable && (
-                              <div style={{ marginTop: "0.4rem", background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 8, overflow: "hidden" }}>
-                                {(team.analyticsFiles && team.analyticsFiles.length > 0) ? (
-                                  <>
-                                    {team.analyticsFiles.slice().reverse().map(f => {
-                                      const label = f.name.replace(team.id + "_", "").replace("_Analytics.csv", "").replace(/_/g, " ");
-                                      return (
-                                        <button key={f.id} onClick={() => openTeamContinue(team, f)}
-                                          style={{ display: "block", width: "100%", background: "none", border: "none", borderBottom: "1px solid #ccfbf1", padding: "0.5rem 0.75rem", fontSize: "0.86rem", fontWeight: 600, color: "#0f766e", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
-                                          onMouseEnter={e => e.currentTarget.style.background = "#ccfbf1"}
-                                          onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                                          → {label}
-                                        </button>
-                                      );
-                                    })}
-                                    <button onClick={() => openTeamContinue(team, null)}
-                                      style={{ display: "block", width: "100%", background: "none", border: "none", padding: "0.4rem 0.75rem", fontSize: "0.78rem", color: "#64748b", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
-                                      onMouseEnter={e => e.currentTarget.style.background = "#e0fdf4"}
-                                      onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                                      Browse all sessions in Upload tab →
-                                    </button>
-                                  </>
-                                ) : (
-                                  <button onClick={() => openTeamContinue(team, null)}
-                                    style={{ display: "block", width: "100%", background: "none", border: "none", padding: "0.5rem 0.75rem", fontSize: "0.86rem", color: "#0f766e", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
-                                    → Open Upload tab to choose a prior session
-                                  </button>
-                                )}
-                              </div>
-                        )}
                         {!team.lastAssessment && (
                           editable ? (
                             <button onClick={() => openTeam(team)}
@@ -5682,9 +5635,9 @@ function App() {
         <div style={{ maxWidth: 1100, margin: "0 auto", display: "flex", padding: "0 1.5rem" }}>
         {(isWorkspaceReadOnly
             ? [["data","Data"], ...(itemReport ? [["items","Item Analysis"]] : []), ["analysis","Report"]]
-            : [["settings","⚙ Settings"],["upload","Upload"],["subgroups","Subgroups"],["data","Data"], ...(itemReport ? [["items","Item Analysis"]] : []), ["analysis","Report"]]
+            : [["upload","Upload"],["data","Data"],["subgroups","Subgroups"], ...(itemReport ? [["items","Item Analysis"]] : []), ["analysis","Report"],["settings","⚙ Settings"]]
           ).map(([key, label]) => (
-          <button key={key} onClick={() => { setActiveTab(key); if (key === "subgroups" && sections.length !== 0) openSgEditor(); }}
+          <button key={key} onClick={() => { setActiveTab(key); if (key === "subgroups" && sections.length !== 0 && !subgroupMap) openSgEditor(); }}
             style={{ background: "none", border: "none", borderBottom: activeTab === key ? "2px solid #0f766e" : "2px solid transparent", marginBottom: -2, color: activeTab === key ? "#0f766e" : "#64748b", fontFamily: "inherit", fontWeight: 700, fontSize: "0.94rem", padding: "0.75rem 1.1rem", cursor: "pointer", transition: "all 0.15s", display: "flex", alignItems: "center", gap: "0.35rem" }}>
             {key === "upload" && <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 1v9M5 4l3-3 3 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/><path d="M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>}
             {key === "data" && <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="1" y="3" width="14" height="2" rx="0.5" fill="currentColor" opacity="0.6"/><rect x="1" y="7" width="14" height="2" rx="0.5" fill="currentColor" opacity="0.8"/><rect x="1" y="11" width="14" height="2" rx="0.5" fill="currentColor"/></svg>}
