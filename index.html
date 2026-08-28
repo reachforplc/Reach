@@ -2027,14 +2027,16 @@ function App() {
     );
     const data = await resp.json();
     if (!resp.ok) { console.error("Reach: shared-team discovery failed", resp.status, data?.error?.message); return []; }
-    return (data.files || []).map(f => ({
-      id: "shared_" + f.id,
-      name: f.name,
-      isShared: true,
-      myRole: f.capabilities?.canEdit ? "owner" : "observer",
-      folderId: f.id,
-      sharedByEmail: f.owners?.[0]?.emailAddress || "",
-    }));
+    return (data.files || [])
+      .filter(f => f.properties?.archived !== "true")
+      .map(f => ({
+        id: "shared_" + f.id,
+        name: f.name,
+        isShared: true,
+        myRole: f.capabilities?.canEdit ? "owner" : "observer",
+        folderId: f.id,
+        sharedByEmail: f.owners?.[0]?.emailAddress || "",
+      }));
   };
 
   const refreshSharedTeams = () => {
@@ -2994,12 +2996,24 @@ function App() {
   const facilTimerRef = useRef(null);
   const [showArchived, setShowArchived] = useState(true);
 
+  const setTeamArchivedDriveFlag = (token, folderId, archived) => {
+    fetch(`https://www.googleapis.com/drive/v3/files/${folderId}?fields=id`, {
+      method: "PATCH",
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify({ properties: { archived: archived ? "true" : "false" } })
+    }).catch(() => {});
+  };
+
   const archiveTeam = (teamId) => {
     const updated = teams.map(t => t.id === teamId ? { ...t, archived: true } : t);
     setTeams(updated);
     setConfirmDeleteId(null);
     driveSaveTeams(updated);
     setView("archived");
+    withToken(async token => {
+      const folderId = await ensureTeamFolder(token, teamId, updated.find(t => t.id === teamId)?.name);
+      setTeamArchivedDriveFlag(token, folderId, true);
+    });
   };
 
   const unarchiveTeam = (teamId) => {
@@ -3007,6 +3021,10 @@ function App() {
     setTeams(updated);
     driveSaveTeams(updated);
     setView("home");
+    withToken(async token => {
+      const folderId = await ensureTeamFolder(token, teamId, updated.find(t => t.id === teamId)?.name);
+      setTeamArchivedDriveFlag(token, folderId, false);
+    });
   };
 
   const deleteTeam = async (teamId) => {
@@ -3618,6 +3636,7 @@ function App() {
     // Depends on the set of team IDs (not just teamsLoaded) so newly-discovered
     // shared teams — which arrive a moment after sign-in — get populated too.
     withToken(async (token) => {
+      const goneTeamIds = [];
       const updated = await Promise.all(teams.map(async (team) => {
         try {
           const folderId = await ensureTeamFolder(token, team.id, team.name, team.folderId);
@@ -3626,14 +3645,26 @@ function App() {
             { headers: { Authorization: "Bearer " + token } }
           );
           const data = await resp.json();
-          if (!resp.ok) throw new Error(`HTTP ${resp.status} listing team folder — ${data?.error?.message || "unknown error"}`);
+          if (!resp.ok) {
+            // A shared team whose folder was deleted (or access revoked) by the owner
+            // shows up as 404/403 here — clean it up instead of leaving a dead card.
+            if (team.isShared && (resp.status === 404 || resp.status === 403)) goneTeamIds.push(team.id);
+            throw new Error(`HTTP ${resp.status} listing team folder — ${data?.error?.message || "unknown error"}`);
+          }
           const allF=data.files||[];
           const files=allF.filter(f=>f.name.includes("_Analytics")).sort((a,b)=>b.name.localeCompare(a.name));
           const rFiles=allF.filter(f=>f.name.endsWith("_report.json")).sort((a,b)=>b.name.localeCompare(a.name));
           return{...team,analyticsFiles:files,reportFiles:rFiles};
         } catch (e) { console.error("Reach: failed to load files for team", team.name, team.isShared ? "(shared, folderId=" + team.folderId + ")" : "", e); return team; }
       }));
-      setTeams(updated);
+      if (goneTeamIds.length) {
+        setTeams(updated.filter(t => !goneTeamIds.includes(t.id)));
+        if (manualSharedTeams.some(t => goneTeamIds.includes(t.id))) {
+          driveSaveManualSharedTeams(manualSharedTeams.filter(t => !goneTeamIds.includes(t.id)));
+        }
+      } else {
+        setTeams(updated);
+      }
     });
   }, [teamsLoaded, driveUser?.accessToken, teams.map(t => t.id).join(",")]);
 
