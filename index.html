@@ -2028,11 +2028,11 @@ function App() {
     const data = await resp.json();
     if (!resp.ok) { console.error("Reach: shared-team discovery failed", resp.status, data?.error?.message); return []; }
     return (data.files || [])
-      .filter(f => f.properties?.archived !== "true")
       .map(f => ({
         id: "shared_" + f.id,
         name: f.name,
         isShared: true,
+        archived: f.properties?.archived === "true",
         myRole: f.capabilities?.canEdit ? "owner" : "observer",
         folderId: f.id,
         sharedByEmail: f.owners?.[0]?.emailAddress || "",
@@ -2427,8 +2427,7 @@ function App() {
       let fileId = rf ? rf.id : null;
       if (!fileId) {
         const teamFolder = await ensureTeamFolder(token, team.id, team.name, team.folderId);
-        const fileName = team.id + "_report.json";
-        const listResp = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${teamFolder}' in parents and trashed=false&fields=files(id,name)`, {
+        const listResp = await fetch(`https://www.googleapis.com/drive/v3/files?q=name contains '_report.json' and '${teamFolder}' in parents and trashed=false&fields=files(id,name,createdTime)&orderBy=createdTime desc`, {
           headers: { Authorization: "Bearer " + token }
         });
         const file = ((await listResp.json()).files || [])[0];
@@ -5398,9 +5397,9 @@ function App() {
             </div>
             )}
 
-            {teamsLoaded && teams.filter(t => t.isShared).length > 0 ? (
+            {teamsLoaded && teams.filter(t => t.isShared && !t.archived).length > 0 ? (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "1rem", marginBottom: "0.5rem" }}>
-                {teams.filter(t => t.isShared).map(team => renderTeamCard(team))}
+                {teams.filter(t => t.isShared && !t.archived).map(team => renderTeamCard(team))}
               </div>
             ) : teamsLoaded && (
               <div style={{ background: "white", border: "1px dashed #e2e8f0", borderRadius: 12, padding: "1.25rem 1.4rem", color: "#94a3b8", fontSize: "0.9rem", marginBottom: "0.5rem" }}>
@@ -5436,11 +5435,11 @@ function App() {
             )}
 
             {/* Archived teams link */}
-            {teamsLoaded && teams.filter(t => t.archived).length > 0 && (
+            {teamsLoaded && (
               <div style={{ marginBottom: "1rem", textAlign: "right" }}>
                 <button onClick={() => setView("archived")}
                   style={{ background: "none", border: "none", color: "#64748b", fontSize: "1.03rem", cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: "0.35rem", textDecoration: "underline" }}>
-                  📦 View Archived Teams ({teams.filter(t => t.archived).length})
+                  📦 View Archived Teams{teams.filter(t => t.archived).length > 0 ? ` (${teams.filter(t => t.archived).length})` : ""}
                 </button>
               </div>
             )}
@@ -5506,17 +5505,21 @@ function App() {
               <div style={{ textAlign: "center", padding: "3rem", color: "#94a3b8" }}>
                 <div style={{ fontSize: "2.88rem", marginBottom: "0.75rem" }}>📦</div>
                 <div style={{ fontWeight: 600, marginBottom: "0.3rem" }}>No archived teams</div>
-                <div style={{ fontSize: "0.94rem" }}>Teams you archive will appear here.</div>
+                <div style={{ fontSize: "0.94rem" }}>Teams you archive, or that get archived by someone who shared a team with you, will appear here.</div>
               </div>
             ) : (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "1rem" }}>
                 {teams.filter(t => t.archived).map(team => (
                   <div key={team.id}
-                    style={{ background: "white", border: `1px solid ${confirmDeleteId === team.id ? "#fca5a5" : "#e2e8f0"}`, borderRadius: 12, padding: "1.25rem 1.4rem", borderTop: `3px solid ${confirmDeleteId === team.id ? "#dc2626" : "#94a3b8"}`, display: "flex", flexDirection: "column", gap: "0.75rem", boxShadow: "0 1px 4px rgba(15,23,42,0.06)" }}>
+                    style={{ background: "white", border: `1px solid ${confirmDeleteId === team.id ? "#fca5a5" : "#e2e8f0"}`, borderRadius: 12, padding: "1.25rem 1.4rem", borderTop: `3px solid ${confirmDeleteId === team.id ? "#dc2626" : team.isShared ? "#a78bfa" : "#94a3b8"}`, display: "flex", flexDirection: "column", gap: "0.75rem", boxShadow: "0 1px 4px rgba(15,23,42,0.06)" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                       <div style={{ flex: 1 }}>
                         <div style={{ fontWeight: 700, color: "#0f172a", fontSize: "1.32rem", marginBottom: "0.3rem" }}>{team.name}</div>
-                        {team.lastAssessment
+                        {team.isShared ? (
+                          <div style={{ fontSize: "0.8rem", color: "#7c3aed", fontWeight: 600 }}>
+                            Shared{team.sharedByEmail ? ` by ${team.sharedByEmail}` : ""} · archived
+                          </div>
+                        ) : team.lastAssessment
                           ? <div style={{ fontSize: "0.86rem", color: "#64748b" }}>
                               <span style={{ color: "#64748b", fontWeight: 600 }}>Last: </span>{team.lastAssessment}
                               {team.lastDate && <span style={{ color: "#94a3b8", marginLeft: "0.4rem" }}>· {team.lastDate}</span>}
@@ -5524,7 +5527,7 @@ function App() {
                           : <div style={{ fontSize: "0.86rem", color: "#94a3b8", fontStyle: "italic" }}>No assessments</div>
                         }
                       </div>
-                      {confirmDeleteId !== team.id && (
+                      {confirmDeleteId !== team.id && !team.isShared && (
                         <button onClick={() => setConfirmDeleteId(team.id)}
                           title="Delete team permanently"
                           style={{ background: "none", border: "none", color: "#cbd5e1", cursor: "pointer", fontSize: "1.03rem", padding: "0.1rem 0.2rem", lineHeight: 1, flexShrink: 0 }}
@@ -5552,17 +5555,23 @@ function App() {
                         </div>
                       </div>
                     ) : (
-                      <div style={{ display: "flex", gap: "0.5rem" }}>
-                        {team.lastAssessment && (
-                          <button onClick={() => openTeamReport(team)}
-                            style={{ flex: 1, background: "linear-gradient(135deg, #0f766e, #0d9488)", color: "white", border: "none", borderRadius: 7, padding: "0.45rem 0.6rem", fontSize: "0.86rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                        {(team.lastAssessment || (team.reportFiles && team.reportFiles.length > 0)) && (
+                          <button onClick={() => openTeamReport(team, team.reportFiles?.[0])}
+                            style={{ flex: "1 1 40%", background: "linear-gradient(135deg, #0f766e, #0d9488)", color: "white", border: "none", borderRadius: 7, padding: "0.45rem 0.6rem", fontSize: "0.86rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
                             📈 View Report
                           </button>
                         )}
-                        <button onClick={() => unarchiveTeam(team.id)}
-                          style={{ flex: 1, background: "white", color: "#0f766e", border: "1px solid #0f766e", borderRadius: 7, padding: "0.45rem 0.6rem", fontSize: "0.86rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                          Unarchive
+                        <button onClick={() => openTeamNotes(team)}
+                          style={{ flex: "1 1 40%", background: "white", color: "#0f766e", border: "1px solid #99f6e4", borderRadius: 7, padding: "0.45rem 0.6rem", fontSize: "0.86rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                          📝 Notes
                         </button>
+                        {!team.isShared && (
+                          <button onClick={() => unarchiveTeam(team.id)}
+                            style={{ flex: "1 1 40%", background: "white", color: "#0f766e", border: "1px solid #0f766e", borderRadius: 7, padding: "0.45rem 0.6rem", fontSize: "0.86rem", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                            Unarchive
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
