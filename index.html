@@ -2997,11 +2997,16 @@ function App() {
   const [showArchived, setShowArchived] = useState(true);
 
   const setTeamArchivedDriveFlag = (token, folderId, archived) => {
-    fetch(`https://www.googleapis.com/drive/v3/files/${folderId}?fields=id`, {
+    fetch(`https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,properties`, {
       method: "PATCH",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
       body: JSON.stringify({ properties: { archived: archived ? "true" : "false" } })
-    }).catch(() => {});
+    }).then(async resp => {
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        console.error("Reach: failed to set archived flag on Drive folder", folderId, resp.status, data?.error?.message);
+      }
+    }).catch(e => console.error("Reach: network error setting archived flag", folderId, e));
   };
 
   const archiveTeam = (teamId) => {
