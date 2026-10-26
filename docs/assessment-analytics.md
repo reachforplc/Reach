@@ -15,7 +15,7 @@ Assessment analysis combines the overview and item analysis in one tab. The over
 
 Item analysis includes success rates, response distributions, discrimination and corrected item-total correlation (CITC). Item points normalize onto a common 100-point scale before pooled calculations. Undefined statistics display as unavailable.
 
-Year over year compares two distinct school-year cohorts within one assessment/version, with sample sizes and percentage-point changes. It does not track individual student growth. Changed questions should use a different version; cross-version equating is not implemented. Historical exports must be uploaded to produce historical comparisons.
+Year over year compares two distinct school-year cohorts within one assessment, with a separate version selector for each year, with sample sizes and percentage-point changes. It does not track individual student growth. Changed tests should use a different version. Match equivalent questions across versions using the editor; this is manual content matching, not statistical equating. Historical exports must be uploaded to produce historical comparisons.
 
 ## Storage and permissions
 
@@ -30,3 +30,9 @@ Edit `source/assessment-analytics.js`, then run `python3 tools/build-assessment-
 The two CSV fixtures in `test-data/assessment-analytics/` contain 150 fictional papers for 2025–2026, split between Teacher A (80) and Teacher B (70), using the same ten-question key as the example assessment. Their section labels include FICTIONAL DEMO. Use assessment ESS Unit 1 and version Original for the comparison; leave Section set to All sections. The demo mean is 73.6667%. Never present it as actual historical performance. Rebuild with `node tools/build-analytics-demo.cjs`.
 
 Item colors use Reach’s success, discrimination and CITC thresholds. Unavailable metrics remain neutral. For discrimination, tied scores at the top/bottom 27% boundaries are proportionally weighted so CSV order cannot change results.
+
+## Year-to-year question matches
+
+Same question numbers match by default. Select baseline/comparison years and versions, open Edit question matches, and choose a corresponding comparison item or No match. Each comparison item can be used once; clear its old match before reassigning it. Save question matches stores an immutable revision in the team Drive folder, keyed by assessment and both year/version pairs. Teacher filters share that mapping and only change the cohorts displayed. Read-only users can use saved matches but cannot edit them. Reload saved matches discards unsaved edits. Stale saves are rejected; concurrent saves are resolved by the newest Drive revision. The editor does not inspect question text, so teams must confirm content equivalence themselves.
+
+Green arrows/cards/bars show growth, red decline, and gray no change at one-decimal precision. All changes are percentage points. Full-test mean/median/proficiency remain separate from matched-item results; changing content and cohort composition can affect full-test comparisons. Unmatched questions never receive change scores.
