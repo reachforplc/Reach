@@ -113,3 +113,12 @@ test('discrimination is invariant to teacher upload order when scores tie',()=>{
  assert.deepEqual(JSON.parse(JSON.stringify(values([a,b]))),JSON.parse(JSON.stringify(values([b,a]))));
  assert.equal(c.analyticsItems([a,b])[0].disc,.5);
 });
+
+test('optional sections default to All students with stable replacement identity',()=>{
+ const a=record({section:''});
+ assert.equal(a.section,'All students');
+ assert.equal(c.analyticsKey(a),c.analyticsKey({...a,section:'All students'}));
+ assert.equal(c.analyticsKey({...a,section:''}),c.analyticsKey(a));
+ assert.equal(record({section:'Period 1'}).section,'Period 1');
+ assert.notEqual(c.analyticsKey(a),c.analyticsKey(record({section:'Period 1'})));
+});
