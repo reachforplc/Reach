@@ -38,6 +38,92 @@
 <body>
   <div id="root"></div>
   <script type="text/babel">
+// ZipGrade custom exports and the built-in Full Format both contain one row per paper.
+function zipGradeColumns(headers) {
+  const normalized = headers.map(h => String(h || "").replace(/^\uFEFF/, "").trim().toLowerCase().replace(/\s+/g, ""));
+  const find = (...names) => normalized.findIndex(h => names.includes(h));
+  const questions = [];
+  normalized.forEach((h, response) => {
+    const match = h.match(/^#(\d+)studentresponse$/) || h.match(/^stu(\d+)$/);
+    if (!match) return;
+    const n = match[1];
+    questions.push({ n, response, key: find(`#${n}primaryanswer`, `prikey${n}`),
+      earned: find(`#${n}pointsearned`, `points${n}`), possible: find(`#${n}pointspossible`),
+      mark: find(`#${n}grademark`, `mark${n}`), tags: find(`#${n}tag(s)`) });
+  });
+  return { quiz: find("quizname"), className: find("class", "quizclass"),
+    first: find("studentfirstname", "firstname"), last: find("studentlastname", "lastname"),
+    id: find("studentid"), total: find("earnedpoints"), possible: find("possiblepoints"),
+    percent: find("percentcorrect"), keyVersion: find("keyversion"), questions };
+}
+
+function isZipGradeCSV(rows) {
+  if (!rows.length) return false;
+  const c = zipGradeColumns(rows[0]);
+  return c.quiz >= 0 && c.total >= 0 && c.possible >= 0 && c.questions.length > 0;
+}
+
+function parseZipGradeCSV(rows, fileName) {
+  const c = zipGradeColumns(rows[0]);
+  const groups = new Map();
+  const get = (row, i) => i < 0 ? "" : String(row[i] || "").trim();
+  const number = value => value === "" ? null : Number(value);
+  rows.slice(1).forEach((row, index) => {
+    if (!row.some(v => String(v || "").trim())) return;
+    const earned = number(get(row, c.total)), possible = number(get(row, c.possible));
+    if (!Number.isFinite(earned) || !Number.isFinite(possible) || possible <= 0) {
+      throw new Error(`ZipGrade row ${index + 2}: earned and possible points must be valid numbers, with possible points greater than zero.`);
+    }
+    const quiz = get(row, c.quiz) || fileName;
+    const className = get(row, c.className) || fileName;
+    const groupKey = JSON.stringify([className, quiz]);
+    if (!groups.has(groupKey)) groups.set(groupKey, { className, quiz, students: [] });
+    const first = get(row, c.first), last = get(row, c.last);
+    const name = [first, last].filter(Boolean).join(" ") || `Paper ${index + 1}`;
+    const rawId = get(row, c.id);
+    const items = c.questions.map(q => {
+      const mark = get(row, q.mark).toUpperCase();
+      let points = number(get(row, q.earned));
+      if (points === null && (mark === "C" || mark === "X")) points = mark === "C" ? 1 : 0;
+      if (!Number.isFinite(points)) throw new Error(`ZipGrade row ${index + 2}, question ${q.n}: missing or invalid earned points.`);
+      const maximum = number(get(row, q.possible));
+      if (q.possible >= 0 && (!Number.isFinite(maximum) || maximum < 0)) {
+        throw new Error(`ZipGrade row ${index + 2}, question ${q.n}: invalid possible points.`);
+      }
+      const correct = mark === "C" ? true : mark === "X" ? false : maximum !== null ? points >= maximum : points > 0;
+      return { itemId: q.n, earned: points, possible: maximum, correct,
+        status: correct ? "Correct" : "Incorrect", response: get(row, q.response),
+        primaryAnswer: get(row, q.key), tags: get(row, q.tags) };
+    }).filter(it => it.possible !== 0);
+    groups.get(groupKey).students.push({ name, studentId: /^0*$/.test(rawId) ? "" : rawId,
+      pct: Math.min(100, earned / possible * 100), history: [], items,
+      keyVersion: get(row, c.keyVersion), _anonymous: !first && !last });
+  });
+  return Array.from(groups.values()).map(group => {
+    const students = group.students;
+    const items = c.questions.map(q => {
+      const answers = new Map();
+      const responses = students.flatMap(s => s.items.filter(it => it.itemId === q.n));
+      if (!responses.length) return null;
+      responses.forEach(it => {
+        const answer = it.response || "(blank)";
+        const key = JSON.stringify([answer, it.correct]);
+        const entry = answers.get(key) || { answer, correct: it.correct, count: 0 };
+        entry.count++; answers.set(key, entry);
+      });
+      const correct = responses.filter(it => it.correct).length;
+      return { ItemID: q.n, Title: `Question ${q.n}`, Correct: String(correct),
+        Incorrect: String(responses.length - correct), ItemDifficulty: String(correct / responses.length),
+        AnswerFrequencies: JSON.stringify({ answers: Array.from(answers.values()) }) };
+    }).filter(Boolean);
+    const label = groups.size > 1 ? `${group.className} — ${group.quiz}` : group.className;
+    return { teacherLabel: label, teacherName: group.className, students,
+      currentAssessment: group.quiz, validCols: [{ name: group.quiz, possible: 100, colIndex: c.total }],
+      historyCols: [], itemQuestionMap: {}, _source: "zipgrade", _zipGradeKey: JSON.stringify([fileName, group.className, group.quiz]),
+      itemData: { teacherLabel: label, summary: { QuizMeanScore: String(students.reduce((sum, s) => sum + s.pct, 0) / students.length) }, items } };
+  });
+}
+
 function isCanvasItemCSV(rows) {
   if (!rows.length) return false;
   return rows[0].some(h => (h || "").trim() === "ItemDifficulty");
@@ -80,7 +166,7 @@ function computeItemPooledStats(sections) {
       const itemMap = {};
       stu.items.forEach(it => {
         if (it.status !== "Not Attempted" && it.earned !== null) {
-          itemMap[it.itemId] = it.earned > 0 ? 1 : 0;
+          itemMap[it.itemId] = (typeof it.correct === "boolean" ? it.correct : it.earned > 0) ? 1 : 0;
         }
       });
       if (Object.keys(itemMap).length > 0) allStudents.push({ pct: stu.pct, items: itemMap });
@@ -172,7 +258,7 @@ function buildItemReport(sections, proficiencyThreshold) {
         sec.students.forEach(stu => {
           if (!stu.items) return;
           const stuItem = stu.items.find(it => String(it.itemId) === String(id));
-          if (stuItem && stuItem.earned === 0) agg.missedBy[tLabel2].push(stu.name);
+          if (stuItem && (stuItem.correct === false || stuItem.earned === 0)) agg.missedBy[tLabel2].push(stu.name);
         });
       }
     });
@@ -215,7 +301,10 @@ function buildItemReport(sections, proficiencyThreshold) {
   strengthItems.sort((a, b) => b.finalDisc - a.finalDisc || b.finalCITC - a.finalCITC || a.id - b.id);
   const summaries = sectionsWithItems.map(s => s.itemData.summary).filter(Boolean);
   const means = summaries.map(s => parseFloat(s.QuizMeanScore)).filter(v => !isNaN(v));
-  const overallMean = means.length ? Math.round(means.reduce((a,b)=>a+b,0)/means.length) : null;
+  const zipGradeStudents = sectionsWithItems.every(s => s._source === "zipgrade") ? sectionsWithItems.flatMap(s => s.students) : [];
+  const overallMean = zipGradeStudents.length
+    ? Math.round(zipGradeStudents.reduce((sum, s) => sum + s.pct, 0) / zipGradeStudents.length * 10) / 10
+    : means.length ? Math.round(means.reduce((a,b)=>a+b,0)/means.length) : null;
   return { strengthItems, priorityItems, reviewItems, overallMean, sectionsWithItems: sectionsWithItems.length, totalItems: Object.keys(itemAgg).length, itemAgg };
 }
 
@@ -1654,7 +1743,7 @@ function HelpPanel({ onClose }) {
             ["📊 Generate Report","After uploading, click Generate Report in the Data tab. Reach computes stats, risk tracking, grade distribution, and teacher breakdown."],
             ["🎯 Risk Tracking","Students below threshold for consecutive assessments are flagged. Thresholds and labels are customizable in Settings."],
             ["🔄 Reassessments","Upload a second file with reassessment scores. Reach merges by name/ID using your chosen policy (Highest or Most Recent)."],
-            ["📐 Item Analysis","Upload Canvas item-level CSVs to see per-item success rate, discrimination index, and CITC. Works alongside student gradebooks."],
+            ["📐 Item Analysis","Upload ZipGrade full/custom exports or Canvas item-level CSVs to see per-item success rate, discrimination index, and CITC. Works alongside student gradebooks."],
             ["📋 Facilitation Mode","Build a structured PLC agenda with timed sections, prompts, and student data visible on screen. Access via the facilitation button."],
             ["💾 Drive Sync","Sign in with Google to save teams, analytics, subgroups, and reports to Drive. Analytics files carry history across sessions."],
             ["👥 Subgroups","Upload a subgroup CSV (Student, Subgroup columns) to see data broken out by ELL, ELP, IEP, and custom groups."],
@@ -3311,6 +3400,13 @@ function App() {
 
           const name = file.name.replace(/\.csv$/i, "").trim();
           const lname = name.toLowerCase();
+
+          if (isZipGradeCSV(rows)) {
+            const imported = parseZipGradeCSV(rows, name);
+            if (!imported.length) throw new Error("This ZipGrade export contains no graded papers.");
+            setSections(prev => [...prev.filter(s => !imported.some(n => n._zipGradeKey === s._zipGradeKey)), ...imported]);
+            return;
+          }
 
           const h0 = (rows[0]?.[0] || "").trim();
           const h1 = (rows[0]?.[1] || "").trim();
@@ -6642,6 +6738,22 @@ function App() {
                 </div>
               </div>
 
+              {sections.some(s => s._source === "zipgrade") && (
+                <div style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 10, padding: "1rem", marginBottom: "1rem", overflowX: "auto" }}>
+                  <h2 style={{ fontSize: "1.15rem", margin: "0 0 0.5rem" }}>All questions</h2>
+                  <p style={{ color: "#64748b", margin: "0 0 0.75rem" }}>Expand a question to see responses and students who missed it. Statistics below are calculated from the uploaded papers.</p>
+                  {Object.values(itemReport.itemAgg).sort((a,b) => Number(a.id) - Number(b.id)).map(item => (
+                    <details key={item.id} style={{ borderTop: "1px solid #e2e8f0", padding: "0.5rem 0" }}>
+                      <summary style={{ cursor: "pointer", fontWeight: 600 }}>Question {item.id} — {item.correct}/{item.total} correct ({item.total ? Math.round(item.correct / item.total * 100) : 0}%)</summary>
+                      <div style={{ padding: "0.5rem 1rem", color: "#475569" }}>
+                        {Object.entries(item.allAnswers).map(([answer, data]) => <div key={answer}>{answer}: {data.count} response{data.count !== 1 ? "s" : ""}</div>)}
+                        <div style={{ marginTop: "0.5rem" }}>Missed by: {Object.values(item.missedBy).flat().join(", ") || "No students"}</div>
+                      </div>
+                    </details>
+                  ))}
+                </div>
+              )}
+
               {/* Metrics guide — collapsible */}
               <div style={{ marginBottom: "1rem", border: "1px solid #e2e8f0", borderRadius: 10, overflow: "hidden", background: "white" }}>
                 <button onClick={() => setItemGuideOpen(v => !v)} style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.65rem 1rem", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit" }}>
@@ -7307,7 +7419,7 @@ function App() {
                       <div style={{ fontWeight: 600, color: "#374151", fontSize: "0.98rem", marginBottom: "0.2rem" }}>
                         {sections.length ? "Drop more files or click to add" : "Drop gradebook CSV files here or click to browse"}
                       </div>
-                      <div style={{ color: "#94a3b8", fontSize: "0.86rem" }}>IC, Canvas Quiz Student, PowerSchool, Skyward, and more — multiple files at once</div>
+                      <div style={{ color: "#94a3b8", fontSize: "0.86rem" }}>ZipGrade, IC, Canvas Quiz Student, PowerSchool, Skyward, and more — multiple files at once</div>
                       <input id="fileIn" type="file" accept=".csv" multiple onChange={e => processFiles(e.target.files)} style={{ display: "none" }} />
                     </div>
 
