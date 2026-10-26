@@ -164,12 +164,14 @@ function computeItemPooledStats(sections) {
     sec.students.forEach(stu => {
       if (!stu.items || stu.items.length === 0) return;
       const itemMap = {};
+      const earnedMap = {};
       stu.items.forEach(it => {
-        if (it.status !== "Not Attempted" && it.earned !== null) {
+        if (it.status !== "Not Attempted" && Number.isFinite(it.earned)) {
           itemMap[it.itemId] = (typeof it.correct === "boolean" ? it.correct : it.earned > 0) ? 1 : 0;
+          earnedMap[it.itemId] = it.earned;
         }
       });
-      if (Object.keys(itemMap).length > 0) allStudents.push({ pct: stu.pct, items: itemMap });
+      if (Object.keys(itemMap).length > 0) allStudents.push({ pct: stu.pct, items: itemMap, earned: earnedMap });
     });
   });
   if (allStudents.length === 0) return {};
@@ -187,20 +189,24 @@ function computeItemPooledStats(sections) {
     const top     = sorted.slice(n - cutoff);
     const disc    = top.filter(s => s.items[id] === 1).length / cutoff
                   - bottom.filter(s => s.items[id] === 1).length / cutoff;
-    const xArr = rows.map(s => s.items[id]);
-    const yArr = rows.map(s => s.pct / 100);
-    const xMean = xArr.reduce((a, b) => a + b, 0) / n;
-    const yMean = yArr.reduce((a, b) => a + b, 0) / n;
+    // Item-rest correlation: retain earned points (including partial credit),
+    // and exclude this item from each student's total. Percentages may be rounded.
+    const correlationRows = rows.filter(s => Object.keys(s.earned).length > 1);
+    const xArr = correlationRows.map(s => s.earned[id]);
+    const yArr = correlationRows.map(s => Object.entries(s.earned)
+      .reduce((sum, [otherId, earned]) => sum + (otherId === id ? 0 : earned), 0));
+    const xMean = xArr.reduce((a, b) => a + b, 0) / xArr.length;
+    const yMean = yArr.reduce((a, b) => a + b, 0) / yArr.length;
     const num   = xArr.reduce((sum, x, i) => sum + (x - xMean) * (yArr[i] - yMean), 0);
     const den   = Math.sqrt(
       xArr.reduce((sum, x) => sum + Math.pow(x - xMean, 2), 0) *
       yArr.reduce((sum, y) => sum + Math.pow(y - yMean, 2), 0)
     );
-    const citc = den > 0 ? num / den : 0;
+    const citc = correlationRows.length >= 2 && den > 0 ? num / den : null;
     result[id] = {
       n, diff: Math.round(diff * 100) / 100,
       disc: Math.round(disc * 100) / 100,
-      citc: Math.round(citc * 100) / 100,
+      citc: citc === null ? null : Math.round(citc * 100) / 100,
     };
   });
   return result;
@@ -2039,19 +2045,6 @@ function App() {
   const [shareBusy, setShareBusy] = useState(false);
   const [shareError, setShareError] = useState("");
 
-  useEffect(() => {
-    if (!sections.length || !report) return;
-    const allPcts = sections.flatMap(sec => sec.students.map(s => s.pct).filter(v => v !== null));
-    const thresh = teamSettings.proficiencyThreshold;
-    const proficient = allPcts.filter(p => p >= thresh).length;
-    const notProficient = allPcts.length - proficient;
-    const proficiencyPct = allPcts.length > 0 ? Math.round((proficient / allPcts.length) * 100) : 0;
-    const gd = buildGrowthData(sections, currentAssessmentName, subgroupMap, priorMap, nameMap, teamSettings);
-    const reassessedToProfCount = gd.reassessments.flatMap(s => s.reassessedAssessments).filter(r => r.crossedProficiency).length;
-    setReport(prev => ({ ...prev, proficient, notProficient, proficiencyPct, reassessedToProfCount }));
-    setGrowthData(gd);
-  }, [teamSettings.proficiencyThreshold, JSON.stringify(teamSettings.riskSettings)]);
-
   const GAPI_CLIENT_ID = "881323077562-olnslcvmhkdaqkckikv6nnkbsqrn1oje.apps.googleusercontent.com";
   // Full Drive scope — required so Reach can automatically discover team folders shared with
   // the signed-in user (via "sharedWithMe") and both read and write their contents. This is a
@@ -3867,15 +3860,18 @@ function App() {
     setActiveTab("analysis");
   };
 
-  // Auto-rebuild the report whenever subgroupMap changes after a report exists,
-  // so the report always reflects current subgroup data regardless of the order
-  // the user uploaded data and defined subgroups in.
+  // Keep report and risk history synchronized with every analysis input. Do not
+  // depend on report/growthData: those are outputs and would create an effect loop.
   React.useEffect(() => {
-    if (!report) return;
-    if (!sections.length) return;
+    if (!sections.length) {
+      setReport(null);
+      setGrowthData(null);
+      return;
+    }
     rebuildReport();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subgroupMap]);
+  }, [sections, subgroupMap, priorMap, nameMap, currentAssessmentName,
+      teamSettings.proficiencyThreshold, JSON.stringify(teamSettings.riskSettings)]);
 
   const GRADE_COLORS = { A:"#15803d", B:"#65a30d", C:"#d97706", D:"#ea580c", F:"#dc2626" };
   const GRADE_BGS = { A:"#dcfce7", B:"#f0fdf4", C:"#fef9c3", D:"#fff7ed", F:"#fee2e2" };
@@ -6798,7 +6794,7 @@ function App() {
                       {/* CITC */}
                       <div style={{ background: "#f8fafc", borderRadius: 8, padding: "0.75rem 0.9rem", borderLeft: "3px solid #0369a1" }}>
                         <div style={{ fontWeight: 700, fontSize: "1.06rem", color: "#0f172a", marginBottom: "0.25rem" }}>CITC (Corrected Item-Total Correlation)</div>
-                        <div style={{ fontSize: "0.98rem", color: "#475569", lineHeight: 1.5 }}>Pearson correlation between a student's score on this item and their overall quiz score. Measures whether students who understand the material overall also get this item right. Items below 0.30 are flagged.</div>
+                        <div style={{ fontSize: "0.98rem", color: "#475569", lineHeight: 1.5 }}>Pearson correlation between a student's earned points on this item and their total earned points on the other items (this item is excluded). Measures whether students who understand the material overall also get this item right. Items below 0.30 are flagged. CITC is unavailable when there are fewer than two usable papers, no other scored items, or no variation in either score.</div>
                         <div style={{ marginTop: "0.4rem", display: "flex", gap: "0.3rem", flexWrap: "wrap" }}>
                           {[["≥0.30 Good","#dcfce7","#15803d"],["0.10–0.29 Fair","#fef9c3","#92400e"],["<0.10 Weak","#fee2e2","#dc2626"]].map(([label,bg,color]) => (
                             <span key={label} style={{ background: bg, color, borderRadius: 4, padding: "0.1rem 0.4rem", fontSize: "0.86rem", fontWeight: 700 }}>{label}</span>
