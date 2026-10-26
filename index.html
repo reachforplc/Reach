@@ -96,7 +96,7 @@ function parseZipGradeCSV(rows, fileName) {
         primaryAnswer: get(row, q.key), tags: get(row, q.tags) };
     }).filter(it => it.possible !== 0);
     groups.get(groupKey).students.push({ name, studentId: /^0*$/.test(rawId) ? "" : rawId,
-      pct: Math.min(100, earned / possible * 100), history: [], items,
+      pct: Math.min(100, Number((earned / possible * 100).toFixed(6))), history: [], items,
       keyVersion: get(row, c.keyVersion), _anonymous: !first && !last });
   });
   return Array.from(groups.values()).map(group => {
