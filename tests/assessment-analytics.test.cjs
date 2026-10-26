@@ -5,7 +5,7 @@ const vm=require('node:vm');
 const {webcrypto}=require('node:crypto');
 const html=fs.readFileSync(fs.existsSync('index.html')?'index.html':'source/github-index.html','utf8');
 const moduleSource=html.split('// BEGIN ASSESSMENT ANALYTICS\n')[1].split('// END ASSESSMENT ANALYTICS')[0];
-const c=vm.createContext({crypto:webcrypto});
+const c=vm.createContext({crypto:webcrypto,TextEncoder});
 vm.runInContext(html.slice(html.indexOf('function zipGradeColumns'),html.indexOf('    const { useState,')),c);
 vm.runInContext(html.slice(html.indexOf('function parseCSVFull'),html.indexOf('function parseICGradebook')),c);
 vm.runInContext(moduleSource.slice(0,moduleSource.indexOf('function AssessmentAnalytics(')),c);
@@ -121,4 +121,26 @@ test('optional sections default to All students with stable replacement identity
  assert.equal(c.analyticsKey({...a,section:''}),c.analyticsKey(a));
  assert.equal(record({section:'Period 1'}).section,'Period 1');
  assert.notEqual(c.analyticsKey(a),c.analyticsKey(record({section:'Period 1'})));
+});
+
+test('year matching defaults, unmatched items, and one-to-one validation',()=>{
+ const left=[{id:'1'},{id:'2'},{id:'3'}],right=[{id:'1'},{id:'2'},{id:'4'}];
+ assert.deepEqual(JSON.parse(JSON.stringify(c.analyticsMatchPairs(left,right))),[{from:'1',to:'1'},{from:'2',to:'2'},{from:'3',to:''}]);
+ assert.equal(c.analyticsMatchPairs(left,right,{'1':'4','2':'','3':'1'})[0].to,'4');
+ assert.throws(()=>c.analyticsMatchPairs(left,right,{'1':'1','2':'1'}),/only one/);
+ assert.throws(()=>c.analyticsMatchPairs(left,right,{'1':'99'}),/no longer/);
+ assert.equal(c.analyticsChange(.04).kind,'unchanged');
+ assert.equal(c.analyticsChange(-.2).kind,'decline');
+ assert.equal(c.analyticsChange(13.1).text,'+13.1 pp');
+});
+test('mapping Drive persistence isolates version/year context and rejects stale saves',async()=>{
+ const ctx={assessment:'Unit 1',baseYear:'2025-2026',baseVersion:'Original',nextYear:'2026-2027',nextVersion:'Revised'};
+ assert.notEqual(await c.analyticsMappingName(ctx),await c.analyticsMappingName({...ctx,nextVersion:'Original'}));
+ const calls=[];
+ const fetcher=async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>url.includes('uploadType')?{id:'saved-map'}:{files:[]}};};
+ const saved=await c.analyticsSaveMapping(fetcher,'test','folder',ctx,{'1':'2'},null);
+ assert.equal(saved.id,'saved-map');assert.ok(calls[1].options.body.includes('"1":"2"'));
+ const stale=async url=>({ok:true,json:async()=>url.includes('alt=media')?{schema:1,context:ctx,matches:{'1':'1'}}:{files:[{id:'newer'}]}});
+ await assert.rejects(c.analyticsSaveMapping(stale,'test','folder',ctx,{'1':'2'},'older'),/changed in Drive/);
+ await assert.rejects(c.analyticsLoadMapping(async()=>({ok:false}),'test','folder',ctx),/Could not load/);
 });
