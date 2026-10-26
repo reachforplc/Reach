@@ -35,6 +35,10 @@ test('partial credit is retained without being counted as a fully correct respon
   assert.equal(sections[0].students[0].items[0].earned, 0.5);
   assert.equal(sections[0].itemData.items[0].Correct, '0');
 });
+test('ZipGrade percentages do not display floating-point tails', () => {
+  const paper = row('Avery','Morgan'); paper[5] = '11'; paper[6] = '20';
+  assert.equal(context.parseZipGradeCSV([headers,paper], 'Example')[0].students[0].pct, 55);
+});
 test('separates classes and assessments and rejects malformed grades', () => {
   const sections = context.parseZipGradeCSV([headers,row('A','',{className:'Period 1'}),row('B','',{className:'Period 2'})], 'Example');
   assert.equal(sections.length, 2);
