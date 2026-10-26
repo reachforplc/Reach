@@ -5,13 +5,13 @@ Choose Assessment Analytics when creating a team, or open Assessment Analytics f
 ## Upload workflow
 
 1. Export every graded question from ZipGrade. Include quiz name, class when available, earned and possible totals, and per-question response, primary answer, grade mark, earned points and possible points. Student identity columns are unnecessary; if supplied, names, IDs and timestamps are discarded before persistence.
-2. Select one or more CSV files. Label each preview with teacher, section, school year (for example 2026-2027), shared assessment name and version. Class values split an export automatically. If Class is blank, provide a section label or use Combined sections. Separate exports are required for separate section results when the original export does not label classes.
+2. Select all teachers’ CSV files together in Uploads. Set the shared assessment, year and version once; then review each teacher/section in the batch. Save batch & analyze opens the combined Assessment analysis tab. Label each preview with teacher, section, school year (for example 2026-2027), shared assessment name and version. Class values split an export automatically. If Class is blank, provide a section label or use Combined sections. Separate exports are required for separate section results when the original export does not label classes.
 3. Use the same assessment name/version for the same test across teachers and years. Confirm matching question content/order for item comparisons; Reach also checks answer keys and relative point weights. Matching keys alone cannot prove identical content.
 4. Review and save. Re-uploading the same assessment/version/year/teacher/section requires explicit replacement and does not add duplicate papers. Use consistent labels; differently labeled uploads count as separate cohorts.
 
 ## Reports
 
-Overview includes paper count, mean, median, high/low, population standard deviation, proficiency at an adjustable threshold, score distribution and teacher/section summaries. Every paper has equal weight, so different section sizes do not distort the team average. Proportionally different scoring scales normalize to percentages.
+Assessment analysis combines the overview and item analysis in one tab. The overview includes paper count, mean, median, high/low, population standard deviation, proficiency at an adjustable threshold, score distribution and teacher/section summaries. Every paper has equal weight, so different section sizes do not distort the team average. Proportionally different scoring scales normalize to percentages.
 
 Item analysis includes success rates, response distributions, discrimination and corrected item-total correlation (CITC). Item points normalize onto a common 100-point scale before pooled calculations. Undefined statistics display as unavailable.
 
@@ -24,3 +24,9 @@ Anonymous paper-level responses are stored in the team's existing Google Drive f
 ## Development
 
 Edit `source/assessment-analytics.js`, then run `python3 tools/build-assessment-analytics.py` to embed it in `index.html`. Run `node --test tests/*.test.cjs`. Browser tests of the local preview use simulated storage; production Google Drive persistence requires a signed-in deployment acceptance test.
+
+## Fictional prior-year demo
+
+The two CSV fixtures in `test-data/assessment-analytics/` contain 150 fictional papers for 2025–2026, split between Teacher A (80) and Teacher B (70), using the same ten-question key as the example assessment. Their section labels include FICTIONAL DEMO. Use assessment ESS Unit 1 and version Original for the comparison; leave Section set to All sections. The demo mean is 73.6667%. Never present it as actual historical performance. Rebuild with `node tools/build-analytics-demo.cjs`.
+
+Item colors use Reach’s success, discrimination and CITC thresholds. Unavailable metrics remain neutral. For discrimination, tied scores at the top/bottom 27% boundaries are proportionally weighted so CSV order cannot change results.

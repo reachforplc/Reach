@@ -85,3 +85,31 @@ test('Drive rejects unreviewed replacement and writes only anonymous section dat
 test('embedded analytics module stays synchronized with its editable source',()=>{
  if(fs.existsSync('source/assessment-analytics.js')) assert.equal(moduleSource.trim(),fs.readFileSync('source/assessment-analytics.js','utf8').trim());
 });
+
+test('item categories use Reach thresholds and never call unavailable metrics strengths',()=>{
+ assert.equal(c.analyticsItemStatus({success:90,disc:.4,citc:.4}).category,'Strength');
+ assert.equal(c.analyticsItemStatus({success:90,disc:.1,citc:.4}).category,'Review');
+ assert.equal(c.analyticsItemStatus({success:50,disc:.4,citc:.4}).category,'Priority');
+ assert.equal(c.analyticsItemStatus({success:75,disc:.4,citc:.4}).category,'Developing');
+ assert.equal(c.analyticsItemStatus({success:90,disc:null,citc:null}).category,'Insufficient evidence');
+});
+test('historical demo fixtures reconcile and remain comparable across scoring scales',()=>{
+ const expected=JSON.parse(fs.readFileSync('test-data/assessment-analytics/expected.json','utf8'));
+ const records=expected.flatMap(e=>c.analyticsParse(fs.readFileSync(e.path,'utf8')).map(g=>record({year:'2025-2026',teacher:`Teacher ${e.teacher}`,section:g.section,papers:g.papers})));
+ assert.equal(c.analyticsSummary(records).n,150);
+ assert.ok(c.analyticsComparable(records));
+ expected.forEach((e,i)=>assert.ok(Math.abs(c.analyticsSummary([records[i]]).mean-e.mean)<1e-9));
+ assert.ok(records.every(r=>r.section.includes('FICTIONAL DEMO')));
+});
+
+test('discrimination is invariant to teacher upload order when scores tie',()=>{
+ const groups=c.analyticsParse(csv());
+ const hitFirst=groups[1].papers[0];
+ const hitSecond=JSON.parse(JSON.stringify(hitFirst));
+ hitSecond.items.forEach(it=>{it.earned=1-it.earned;it.correct=!it.correct;});
+ const a=record({papers:[hitFirst,hitFirst,groups[0].papers[0]]});
+ const b=record({teacher:'Teacher B',papers:[hitSecond,hitSecond,groups[0].papers[0]]});
+ const values=rs=>c.analyticsItems(rs).map(it=>[it.id,it.disc,it.citc]);
+ assert.deepEqual(JSON.parse(JSON.stringify(values([a,b]))),JSON.parse(JSON.stringify(values([b,a]))));
+ assert.equal(c.analyticsItems([a,b])[0].disc,.5);
+});

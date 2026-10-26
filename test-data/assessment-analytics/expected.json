@@ -1,0 +1,16 @@
+[
+  {
+    "teacher": "A",
+    "count": 80,
+    "mean": 72.625,
+    "proficient": 71.25,
+    "path": "test-data/assessment-analytics/ESS-Unit-1-2025-2026-Teacher-A-FICTIONAL-DEMO.csv"
+  },
+  {
+    "teacher": "B",
+    "count": 70,
+    "mean": 74.85714285714286,
+    "proficient": 70,
+    "path": "test-data/assessment-analytics/ESS-Unit-1-2025-2026-Teacher-B-FICTIONAL-DEMO.csv"
+  }
+]
