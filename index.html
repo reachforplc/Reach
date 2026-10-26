@@ -96,7 +96,7 @@ function parseZipGradeCSV(rows, fileName) {
         primaryAnswer: get(row, q.key), tags: get(row, q.tags) };
     }).filter(it => it.possible !== 0);
     groups.get(groupKey).students.push({ name, studentId: /^0*$/.test(rawId) ? "" : rawId,
-      pct: Math.min(100, earned / possible * 100), history: [], items,
+      pct: Math.min(100, Number((earned / possible * 100).toFixed(6))), history: [], items,
       keyVersion: get(row, c.keyVersion), _anonymous: !first && !last });
   });
   return Array.from(groups.values()).map(group => {
@@ -1284,11 +1284,13 @@ function parseGenericGradebook(rows, mapping, fileName) {
   const currentAsmCol  = assessmentCols[assessmentCols.length - 1];
   const historyAsmCols = assessmentCols.slice(0, -1);
 
-  const studentRows = rows.slice(dataStartRow).filter(r => (r[nameCol] || "").trim());
+  const nameCols = Array.isArray(mapping.nameCols) ? mapping.nameCols : [nameCol];
+  const readName = row => nameCols.filter(i => Number.isInteger(i) && i >= 0).map(i => String(row[i] || "").trim()).filter(Boolean).join(" ");
+  const studentRows = rows.slice(dataStartRow).filter(r => readName(r));
 
   const sectionGroups = {};
   studentRows.forEach(row => {
-    const rawName = (row[nameCol] || "").trim();
+    const rawName = readName(row);
     if (!rawName) return;
 
     let name;
@@ -1421,18 +1423,17 @@ function ColumnMappingUI({ rows, fileName, onConfirm, onCancel }) {
     return "pct";
   };
 
-  const [nameCol,    setNameCol]    = useLocalState(() => {
-    const s0 = getSamples(0);
-    const looksLikeName = s0.length > 0 && s0.every(v => /^[A-Z][a-z]/.test(v) && v.length < 30);
-    if (looksLikeName) return 0;
-    return guessCol([/^student\s*name$/,/^name$/,/^student$/,/^full.?name$/]) ?? 0;
+  const [nameCol, setNameCol] = useLocalState(() => guessCol([/^student\s*name$/,/^name$/,/^student$/,/^full.?name$/,/^(student\s*)?first\s*name$/,/^(student\s*)?last\s*name$/]));
+  const [secondNameCol, setSecondNameCol] = useLocalState(() => {
+    const first = guessCol([/^(student\s*)?first\s*name$/]);
+    return first === nameCol ? guessCol([/^(student\s*)?last\s*name$/]) : null;
   });
   const [idCol,      setIdCol]      = useLocalState(() => guessCol([/student\s*id/,/^id$/,/^sis/,/number/,/^student.?#/]));
   const [sectionCol, setSectionCol] = useLocalState(() => null);
   const [showAdvanced, setShowAdvanced] = useLocalState(false);
 
   const initScoreCols = () => {
-    const skip = new Set([nameCol, idCol, sectionCol].filter(x => x !== null));
+    const skip = new Set([nameCol, secondNameCol, idCol, sectionCol].filter(x => x !== null));
     return headers.map((_, i) => {
       if (skip.has(i)) return null;
       const samples = getSamples(i);
@@ -1450,7 +1451,7 @@ function ColumnMappingUI({ rows, fileName, onConfirm, onCancel }) {
         pointsPossible: "100",
         samples,
         ambiguous,
-        selected: true,
+        selected: false,
       };
     }).filter(Boolean);
   };
@@ -1459,7 +1460,7 @@ function ColumnMappingUI({ rows, fileName, onConfirm, onCancel }) {
   const [ptsPossible, setPtsPossible] = useLocalState("100");
 
   const toggleCol = (i) => setScoreCols(prev => prev.map((c, j) => j === i ? { ...c, selected: !c.selected } : c));
-  const selectedCols = scoreCols.filter(c => c.selected);
+  const selectedCols = scoreCols.filter(c => c.selected && ![nameCol, secondNameCol, idCol, sectionCol].includes(c.colIndex));
   const anyAmbiguous = selectedCols.some(c => c.ambiguous);
 
   const colOpts = colLabels.map((label, i) => ({ value: i, label: `Col ${i+1}: ${label.slice(0,40)}` }));
@@ -1467,9 +1468,9 @@ function ColumnMappingUI({ rows, fileName, onConfirm, onCancel }) {
   const scoreTypeLabel = (t) => ({ pct: "% score", points: "raw points", proficiency: "proficiency text", letter: "letter grade", fractional: "fractional %" }[t] || t);
 
   const confirm = () => {
-    if (!selectedCols.length) return;
+    if (!selectedCols.length || nameCol === null) return;
     const mapping = {
-      nameCol, idCol, sectionCol,
+      nameCol, nameCols: [...new Set([nameCol, secondNameCol].filter(i => i !== null))], idCol, sectionCol,
       dataStartRow: dataStart,
       assessmentCols: selectedCols.map(c => ({
         colIndex: c.colIndex,
@@ -1509,8 +1510,8 @@ function ColumnMappingUI({ rows, fileName, onConfirm, onCancel }) {
           <thead>
             <tr style={{ background: "#f1f5f9" }}>
               {headers.map((_, ci) => {
-                const isName  = ci === nameCol;
-                const isScore = scoreCols.some(c => c.colIndex === ci && c.selected);
+                const isName  = ci === nameCol || ci === secondNameCol;
+                const isScore = selectedCols.some(c => c.colIndex === ci);
                 return (
                   <th key={ci} style={{
                     padding: "0.3rem 0.5rem", borderBottom: "2px solid #e2e8f0", borderRight: "1px solid #e8edf2",
@@ -1530,8 +1531,8 @@ function ColumnMappingUI({ rows, fileName, onConfirm, onCancel }) {
             {rows.slice(dataStart, Math.min(dataStart + 4, rows.length)).map((row, ri) => (
               <tr key={ri} style={{ background: ri % 2 === 0 ? "white" : "#fafafa" }}>
                 {headers.map((_, ci) => {
-                  const isName  = ci === nameCol;
-                  const isScore = scoreCols.some(c => c.colIndex === ci && c.selected);
+                  const isName  = ci === nameCol || ci === secondNameCol;
+                  const isScore = selectedCols.some(c => c.colIndex === ci);
                   return (
                     <td key={ci} style={{
                       padding: "0.28rem 0.5rem", borderBottom: "1px solid #f1f5f9", borderRight: "1px solid #f1f5f9",
@@ -1553,20 +1554,28 @@ function ColumnMappingUI({ rows, fileName, onConfirm, onCancel }) {
 
       {/* Name column */}
       <div style={{ marginBottom: "1rem" }}>
-        <label style={labelStyle}>Which column has student names?</label>
-        <select value={nameCol} onChange={e => setNameCol(+e.target.value)} style={{ ...selStyle, width: "auto", minWidth: 220 }}>
+        <label style={labelStyle}>Student names</label>
+        <select aria-label="Student name or first name column" value={nameCol ?? ""} onChange={e => { const value = e.target.value === "" ? null : +e.target.value; setNameCol(value); if (value === secondNameCol) setSecondNameCol(null); }} style={{ ...selStyle, width: "auto", minWidth: 220 }}>
+          <option value="">Choose name or first name column</option>
           {colOpts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
+        <select aria-label="Last name or second name column" value={secondNameCol ?? ""} onChange={e => setSecondNameCol(e.target.value === "" ? null : +e.target.value)} style={{ ...selStyle, width: "auto", minWidth: 220, marginLeft: "0.5rem" }}>
+          <option value="">No second name column</option>
+          {colOpts.filter(o => o.value !== nameCol).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <div style={{ marginTop: "0.4rem", color: "#64748b", fontSize: "0.9rem" }}>Choose one full-name column, or first and last name separately. Either part may be blank.</div>
+        {nameCol !== null && <div style={{ marginTop: "0.4rem", color: "#0f766e" }}>Name preview: {rows.slice(dataStart, dataStart + 3).map(r => [...new Set([nameCol, secondNameCol].filter(i => i !== null))].map(i => (r[i] || "").trim()).filter(Boolean).join(" ") || "(missing name)").join(" · ")}</div>}
       </div>
 
       {/* Score columns */}
       <div style={{ marginBottom: anyAmbiguous ? "0.75rem" : "1rem" }}>
-        <label style={labelStyle}>Which columns contain scores? <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0, color: "#94a3b8" }}>Tick or untick to include/exclude</span></label>
+        <label style={labelStyle}>Which columns contain scores? <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0, color: "#94a3b8" }}>Choose only assessment scores. Nothing is selected automatically.</span></label>
         {scoreCols.length === 0
           ? <div style={{ fontSize: "1.03rem", color: "#dc2626" }}>No score columns detected. Check the file has student data.</div>
           : (
             <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
               {scoreCols.map((c, i) => {
+                if ([nameCol, secondNameCol, idCol, sectionCol].includes(c.colIndex)) return null;
                 const badge = typeBadge(c.scoreType);
                 return (
                   <button key={i} onClick={() => toggleCol(i)}
@@ -1626,7 +1635,7 @@ function ColumnMappingUI({ rows, fileName, onConfirm, onCancel }) {
       {/* Confirm */}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
         <button onClick={onCancel} style={{ background: "none", border: "1px solid #e2e8f0", color: "#64748b", borderRadius: 7, padding: "0.45rem 1rem", fontSize: "1.06rem", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-        <button onClick={confirm} disabled={selectedCols.length === 0}
+        <button onClick={confirm} disabled={selectedCols.length === 0 || nameCol === null}
           style={{ background: selectedCols.length ? "#0f766e" : "#e2e8f0", color: selectedCols.length ? "white" : "#94a3b8", border: "none", borderRadius: 7, padding: "0.45rem 1.25rem", fontSize: "1.06rem", fontWeight: 700, cursor: selectedCols.length ? "pointer" : "default", fontFamily: "inherit" }}>
           Confirm ({selectedCols.length} score col{selectedCols.length !== 1 ? "s" : ""})
         </button>
