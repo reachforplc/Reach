@@ -2201,6 +2201,32 @@ function AssessmentAnalytics({team,readOnly,onLoad,onSave,onLoadMapping,onSaveMa
 
 // END ASSESSMENT ANALYTICS
 
+// BEGIN REACH SESSION
+const REACH_SESSION_KEY = "reach_google_session_v1";
+function reachReadSession(storage, now = Date.now()) {
+  try {
+    const value = JSON.parse(storage.getItem(REACH_SESSION_KEY));
+    if (value?.version === 1 && typeof value.accessToken === "string" && value.accessToken &&
+        Number.isFinite(value.expiresAt) && value.expiresAt > now + 30000) {
+      return { accessToken: value.accessToken, expiresAt: value.expiresAt,
+        name: typeof value.name === "string" ? value.name : "Teacher",
+        email: typeof value.email === "string" ? value.email : "",
+        picture: typeof value.picture === "string" ? value.picture : null };
+    }
+  } catch (_) {}
+  reachWriteSession(storage, null);
+  return null;
+}
+function reachWriteSession(storage, user) {
+  try {
+    if (!user) storage.removeItem(REACH_SESSION_KEY);
+    else storage.setItem(REACH_SESSION_KEY, JSON.stringify({ version: 1,
+      accessToken: user.accessToken, expiresAt: user.expiresAt,
+      name: user.name, email: user.email, picture: user.picture }));
+  } catch (_) { /* Storage can be disabled; sign-in still works in memory. */ }
+}
+// END REACH SESSION
+
 function App() {
   const isSnapshot = !!SNAPSHOT;
 
@@ -2459,54 +2485,54 @@ function App() {
   const [subgroupFromDrive, setSubgroupFromDrive] = useState(false);
   const [tokenExpired,    setTokenExpired]    = useState(false);
   const tokenClientRef = useRef(null);
-  const refreshingRef  = useRef(false);
-  const refreshQueueRef = useRef([]);
   const folderCreatingRef = useRef(null);
   const [lastFailedOp,  setLastFailedOp]    = useState(null); // { label, fn } for retry
 
 
-  const getValidToken = () => new Promise((resolve, reject) => {
-    const user = driveUser;
-    if (!user) { reject(new Error("not_signed_in")); return; }
-
-    const fiveMin = 5 * 60 * 1000;
-    const needsRefresh = !user.expiresAt || Date.now() >= user.expiresAt - fiveMin;
-
-    if (!needsRefresh) { resolve(user.accessToken); return; }
-
-    refreshQueueRef.current.push({ resolve, reject });
-    if (refreshingRef.current) return;
-
-    refreshingRef.current = true;
-    if (!tokenClientRef.current) {
-      const err = new Error("token_client_unavailable");
-      refreshQueueRef.current.forEach(cb => cb.reject(err));
-      refreshQueueRef.current = [];
-      refreshingRef.current = false;
-      reject(err); return;
+  const saveDriveSession = (user) => {
+    try { reachWriteSession(window.sessionStorage, user); } catch (_) {}
+  };
+  const expireDriveSession = () => {
+    saveDriveSession(null);
+    setTokenExpired(true);
+    setDriveStatus("error");
+    setDriveMsg("Your Google session has expired. Reconnect Google to continue saving.");
+  };
+  const getValidToken = async () => {
+    if (!driveUser) throw new Error("not_signed_in");
+    if (!driveUser.expiresAt || Date.now() >= driveUser.expiresAt - 30000) {
+      expireDriveSession();
+      throw new Error("session_expired");
     }
+    return driveUser.accessToken;
+  };
 
-    const prevCallback = tokenClientRef.current.callback;
-    tokenClientRef.current.callback = (resp) => {
-      tokenClientRef.current.callback = prevCallback;
-      refreshingRef.current = false;
-      if (resp.error) {
-        setTokenExpired(true);
-        setDriveStatus("error");
-        setDriveMsg("Your session has expired. Please re-authenticate to continue saving to Drive.");
-        const err = new Error("refresh_failed: " + resp.error);
-        refreshQueueRef.current.forEach(cb => cb.reject(err));
-        refreshQueueRef.current = [];
-        return;
-      }
-      const expiresAt = Date.now() + (resp.expires_in || 3600) * 1000;
-      setTokenExpired(false);
-      setDriveUser(prev => prev ? { ...prev, accessToken: resp.access_token, expiresAt } : prev);
-      refreshQueueRef.current.forEach(cb => cb.resolve(resp.access_token));
-      refreshQueueRef.current = [];
-    };
-    tokenClientRef.current.requestAccessToken({ prompt: "" });
-  });
+  // Validate the saved tab session before loading any account data.
+  useEffect(() => {
+    let cancelled = false;
+    let saved;
+    try { saved = reachReadSession(window.sessionStorage); } catch (_) {}
+    if (!saved) return;
+    setDriveStatus("signing-in");
+    fetch("https://www.googleapis.com/drive/v3/about?fields=user", {
+      headers: { Authorization: "Bearer " + saved.accessToken }
+    }).then(async response => {
+      if (!response.ok) throw new Error("session_unavailable");
+      const {user} = await response.json();
+      if (cancelled) return;
+      const restored = { ...saved, name: user?.displayName || saved.name,
+        email: user?.emailAddress || saved.email, picture: user?.photoLink || saved.picture };
+      saveDriveSession(restored);
+      setDriveUser(restored);
+      driveListFiles(restored.accessToken);
+    }).catch(() => {
+      if (cancelled) return;
+      saveDriveSession(null);
+      setDriveStatus("idle");
+      setDriveMsg("Please sign in to reconnect Google Drive.");
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const withToken = async (fn) => {
     try {
@@ -2846,6 +2872,10 @@ function App() {
       tokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
         client_id: GAPI_CLIENT_ID,
         scope: DRIVE_SCOPE,
+        error_callback: () => {
+          setDriveStatus("error");
+          setDriveMsg("Google sign-in was closed or blocked. Please try signing in again.");
+        },
         callback: (resp) => {
           if (resp.error) { setDriveStatus("error"); setDriveMsg("Sign-in failed: " + resp.error); return; }
           const expiresAt = Date.now() + (resp.expires_in || 3600) * 1000;
@@ -2853,10 +2883,12 @@ function App() {
           fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
             headers: { Authorization: "Bearer " + resp.access_token }
           }).then(r => r.json()).then(profile => {
-            setDriveUser({ name: profile.name, email: profile.email, picture: profile.picture, accessToken: resp.access_token, expiresAt });
+            const user = { name: profile.name, email: profile.email, picture: profile.picture, accessToken: resp.access_token, expiresAt };
+            saveDriveSession(user); setDriveUser(user);
             driveListFiles(resp.access_token);
           }).catch(() => {
-            setDriveUser({ name: "Teacher", email: "", picture: null, accessToken: resp.access_token, expiresAt });
+            const user = { name: "Teacher", email: "", picture: null, accessToken: resp.access_token, expiresAt };
+            saveDriveSession(user); setDriveUser(user);
             driveListFiles(resp.access_token);
           });
         },
@@ -2868,31 +2900,32 @@ function App() {
 
   useEffect(() => {
     if (!driveUser?.expiresAt) return;
-    const msUntilRefresh = driveUser.expiresAt - Date.now() - 5 * 60 * 1000;
-    if (msUntilRefresh <= 0) return;
-    const timer = setTimeout(() => {
-      if (tokenClientRef.current && driveUser) {
-        getValidToken().catch(() => {}); // triggers silent refresh
-      }
-    }, msUntilRefresh);
+    const remaining = driveUser.expiresAt - Date.now() - 30000;
+    if (remaining <= 0) { expireDriveSession(); return; }
+    const timer = setTimeout(expireDriveSession, remaining);
     return () => clearTimeout(timer);
   }, [driveUser?.expiresAt]);
 
   const driveSignIn = () => {
     if (!tokenClientRef.current) { setDriveMsg("Google sign-in not ready yet — try again in a moment."); return; }
     setDriveStatus("signing-in");
-    tokenClientRef.current.requestAccessToken({ prompt: "consent" });
+    tokenClientRef.current.requestAccessToken({ prompt: "" });
   };
 
   const driveReAuthenticate = () => {
     if (!tokenClientRef.current) return;
-    setTokenExpired(false);
     setDriveStatus("signing-in");
-    tokenClientRef.current.requestAccessToken({ prompt: "consent" });
+    tokenClientRef.current.requestAccessToken({ prompt: "" });
   };
 
   const driveSignOut = () => {
-    if (driveUser?.accessToken) window.google?.accounts?.oauth2?.revoke(driveUser.accessToken, () => {});
+    // Signing out ends this tab's session; it does not revoke the teacher's Google grant.
+    saveDriveSession(null);
+    setTokenExpired(false);
+    setReachFolderId(null);
+    teamFolderIdsRef.current = {};
+    taggedFoldersRef.current = {};
+    setActiveTeam(null); setView("home"); setTeams([]);
     setDriveUser(null); setDriveFiles([]); setDriveSubgroupFile(null); setDriveStatus("idle"); setDriveMsg(""); setSubgroupFromDrive(false);
   };
 
@@ -5802,7 +5835,8 @@ function App() {
                 {driveUser.picture && <img src={driveUser.picture} alt="" style={{ width: 26, height: 26, borderRadius: "50%", border: "2px solid rgba(20,184,166,0.5)" }} />}
                 <div style={{ fontSize: "0.83rem", lineHeight: 1.3 }}>
                   <div style={{ color: "#e2e8f0", fontWeight: 600 }}>{driveUser.name}</div>
-                  <div style={{ color: "#64748b" }}>Drive connected</div>
+                  <div style={{ color: "#64748b" }}>{tokenExpired ? "Reconnect to save" : "Drive connected"}</div>
+                  {tokenExpired && <button onClick={driveReAuthenticate} disabled={driveStatus === "signing-in"}>{driveStatus === "signing-in" ? "Connecting…" : "Reconnect Google"}</button>}
                 </div>
                 <button onClick={driveSignOut} style={{ background: "rgba(255,255,255,0.08)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 6, padding: "0.25rem 0.6rem", fontSize: "0.8rem", cursor: "pointer", fontFamily: "inherit" }}>Sign out</button>
               </div>
