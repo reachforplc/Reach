@@ -326,16 +326,7 @@ function AssessmentAnalytics({team,readOnly,onLoad,onSave,onLoadMapping,onSaveMa
         <p><span className="aa-pill aa-strength">Strength</span> High success and healthy metrics.</p>
         <p><span className="aa-pill aa-developing">Developing</span> Moderate success with healthy metrics.</p>
         <p><span className="aa-pill aa-insufficient-evidence">Insufficient evidence</span> A statistic is unavailable and no low metric is observed.</p>
-      </div><p>These categories guide item review, not student analysis.</p></details>
-      <details className="aa-guide aa-validity-guide"><summary>🔎 Item difficulty, discrimination, and validity</summary>
-        <p><strong>Item difficulty (p-value)</strong> is the proportion of students who answered correctly: p = success rate ÷ 100. A higher p means an easier item. This is not a statistical-significance p-value.</p>
-        <p>Read difficulty, the Discrimination Index (DI), and corrected item-total correlation (CITC) together. They describe how an item behaved in this group; they do not establish validity on their own. Check the answer key, wording, learning target, instruction, and response patterns before deciding what to change.</p>
-        <h3>1. Why extreme difficulty limits discrimination</h3>
-        <p>When almost everyone answers correctly or incorrectly, there are few responses available to separate higher- and lower-scoring students. At p = 0.50, a binary item has its greatest response variance, but this does not guarantee high DI or CITC.</p>
-        <p><strong>DI example:</strong> with upper and lower groups each containing 27% of students, the theoretical upper bound is min(1, p ÷ 0.27, (1 − p) ÷ 0.27). At p = 0.95, DI can reach only about 0.19, even if every incorrect answer is in the lower group. DI = 1 is possible across p = 0.27–0.73, not only at 0.50. Reach’s finite group sizes and ties can affect the attainable bound.</p>
-        <p><strong>CITC is different:</strong> its attainable value also depends on the distribution of remaining test scores; p alone does not set a universal ceiling. If item points or remaining scores have no variation, the correlation is unavailable, not zero. With partial credit, Reach’s fully-correct percentage and points-based CITC describe different aspects of the item.</p>
-        <h3>2. Three-metric review guide</h3>
-        <p>These are illustrative review patterns, not automatic validity diagnoses or new scoring rules. DI and CITC have different thresholds; use the individual scales above. Mixed results and values between the examples need context.</p>
+      </div><p>These categories guide item review, not student analysis.</p><div className="aa-validity-guide"><h3>Three-metric review guide</h3><p>Item difficulty (p) is the proportion of students answering correctly. These patterns guide review; they do not establish validity on their own.</p>
         {table(['Difficulty','DI / CITC pattern','Possible interpretation','Suggested action'],[
           ['Moderate: p = 0.30–0.70','DI ≥0.30 and CITC ≥0.30','Encouraging separation and consistency with the rest of the test. Content alignment still matters.','Keep if aligned'],
           ['Moderate: p = 0.30–0.70','DI <0.20 or CITC <0.20','Review wording, key, distractors, instruction, and whether the item measures a different intended skill. Low values do not prove a defect.','Investigate; revise if needed'],
@@ -343,11 +334,8 @@ function AssessmentAnalytics({team,readOnly,onLoad,onSave,onLoadMapping,onSaveMa
           ['Very hard: p <0.15','DI or CITC near zero','May be intentionally challenging, or may reflect missing instruction or an item problem. This does not by itself identify top performers.','Check alignment and responses'],
           ['Any difficulty','Negative DI or CITC','Unexpected inverse relationship. Check scoring, key, ambiguity, sample size, and content differences urgently.','Review before reuse; correct or remove if warranted']
         ])}
-        <h3>3. Protect content coverage and score interpretation</h3>
-        <p>A test made entirely of hard items can create a floor effect; a test made entirely of easy items can create a ceiling effect. Include a purposeful range of difficulty when the goal is to distinguish performance across levels, while keeping the assessment aligned to its learning targets.</p>
-        <p>Difficulty balance alone does not guarantee construct validity. A mastery assessment may appropriately have many easy items after effective instruction. Avoid maximizing discrimination at the expense of essential content, and interpret small samples cautiously.</p>
-        <p>Further reading: <a href="https://www.washington.edu/assessment/scanning-scoring/scoring/reports/item-analysis/" target="_blank" rel="noopener noreferrer">University of Washington: Understanding item analyses</a> · <a href="https://www.schreyerinstitute.psu.edu/scanning/UnderstandingExamAnalysisReport" target="_blank" rel="noopener noreferrer">Penn State: Understanding your exam analysis report</a>.</p>
-      </details>
+      </div></details>
+
       <div className="aa-category-grid">{['Strength','Priority','Review','Developing','Insufficient evidence'].map(cat=><div className={'aa-category aa-'+cat.toLowerCase().replaceAll(' ','-')} key={cat}><span>{cat} items</span><strong>{items.filter(it=>analyticsItemStatus(it).category===cat).length}</strong></div>)}</div>
       {table(['Question','Correct','Success','Discrimination','CITC','Review status'],items.map(it=>{const status=analyticsItemStatus(it);return[it.id,`${it.correct}/${it.n}`,<span className={'aa-pill '+(it.success>=80?'aa-good':it.success>=70?'aa-light-green':it.success>=55?'aa-warn':'aa-low')}>{pct(it.success)}</span>,<span className={'aa-pill '+(it.disc===null?'':it.disc>=.4?'aa-good':it.disc>=.2?'aa-light-green':it.disc>=0?'aa-fair':'aa-low')}>{number(it.disc)}</span>,<span className={'aa-pill '+(it.citc===null?'':it.citc>=.3?'aa-good':it.citc>=.1?'aa-fair':'aa-low')}>{number(it.citc)}</span>,<span className={'aa-pill aa-'+status.category.toLowerCase().replaceAll(' ','-')}>{status.category}</span>];}))}
       {['Priority','Review','Strength','Developing','Insufficient evidence'].map(category=>{
